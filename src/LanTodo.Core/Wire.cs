@@ -4,7 +4,7 @@ using System.Text.Json;
 namespace LanTodo.Core;
 
 public sealed record Packet(string Kind, string? Name = null, string? Secret = null, string[]? Ids = null,
-    Revision[]? Revisions = null, int Offset = 0, bool Done = false, string? Error = null, int Protocol = 1);
+    Revision[]? Revisions = null, int Offset = 0, bool Done = false, string? Error = null, int Protocol = 1, string? Generation = null);
 
 public static class Wire
 {

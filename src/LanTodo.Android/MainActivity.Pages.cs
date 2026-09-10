@@ -49,6 +49,7 @@ public partial class MainActivity
     private void Devices()
     {
         Screen("我的设备"); showingDevices = true; body.AddView(Text(app.Identity.Name,20));
+        body.AddView(Button("NAS 辅助同步  ›", () => Navigate(NasSettings)));
         body.AddView(Text("只需首次连接一次，以后自动同步",20));
         body.AddView(Text("配对会长期保存在本机。重启或更换 IP 都无需重新配对；双方在同一可互通的局域网运行时，会自动连接。开启后台同步后不必保持界面打开。"));
         foreach (var device in app.Identity.Devices)

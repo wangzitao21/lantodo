@@ -325,7 +325,7 @@ AsyncTest("Profile move preserves history, settings, identity and pairing and re
         ProfileMigration.MoveTo(runtime.Store,destination);
         Check(runtime.Store.Root==destination && State(runtime.Store)==before);
         Check(!File.Exists(Path.Combine(source,SqliteProfile.FileName)));
-        Check(Directory.GetFiles(destination).Select(Path.GetFileName).SequenceEqual(new[]{SqliteProfile.FileName}));
+        Check(Directory.GetFiles(destination).Where(p=>!p.EndsWith(".lock",StringComparison.Ordinal)).Select(Path.GetFileName).SequenceEqual(new[]{SqliteProfile.FileName}));
         runtime.SetReconcileHours(1);runtime.SetReconcileHours(2);
     }
     await using var reopened=new AppRuntime(destination,"不应覆盖");
@@ -412,7 +412,7 @@ Test("SQLite contains native header and no persistent journal or identity files"
     using var temp=new Sandbox();using var s=new TodoStore(temp.Path("a"));using var identity=new DeviceIdentity(s.Database,"电脑");Add(s);
     using(var headerFile=new FileStream(s.Database.FilePath,FileMode.Open,FileAccess.Read,FileShare.ReadWrite))
     { byte[] header=new byte[16];headerFile.ReadExactly(header);Check(System.Text.Encoding.ASCII.GetString(header)=="SQLite format 3\0"); }
-    Check(Directory.GetFiles(s.Root).Select(Path.GetFileName).SequenceEqual(new[]{SqliteProfile.FileName}));
+    Check(Directory.GetFiles(s.Root).Where(p=>!p.EndsWith(".lock",StringComparison.Ordinal)).Select(Path.GetFileName).SequenceEqual(new[]{SqliteProfile.FileName}));
     using var c=new SqliteConnection("Pooling=False;Data Source="+s.Database.FilePath);c.Open();using var cmd=c.CreateCommand();cmd.CommandText="SELECT sqlite_version()";
     Console.WriteLine("SQLite engine: "+cmd.ExecuteScalar());
 });
@@ -433,6 +433,7 @@ Test("An unversioned foreign SQLite database is rejected without creating applic
     Sql(file,"CREATE TABLE unrelated(value TEXT); INSERT INTO unrelated VALUES('keep');");var before=File.ReadAllBytes(file);
     Throws<InvalidDataException>(()=>new TodoStore(root));Check(before.SequenceEqual(File.ReadAllBytes(file)));
 });
+ReplicaTests.Register(tests);
 int failed=0;
 foreach(var test in tests)
 {

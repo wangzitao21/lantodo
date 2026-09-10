@@ -159,12 +159,22 @@ public sealed class SqliteProfile : IProfileDatabase
         private readonly string path;
         private readonly ManualResetEventSlim stop = new();
         private Thread? thread;
+        private FileStream? linuxLease;
         private bool disposed;
         public ProfileLease(string path)
         {
             this.path = path;
             lock (Active) if (!Active.Add(path)) throw new IOException("该数据库已在使用中。");
-            if (!OperatingSystem.IsWindows()) return; // Android has one runtime in its private app process.
+            if (!OperatingSystem.IsWindows())
+            {
+                // NAS containers must never share a live profile. Android has one private runtime.
+                if (!OperatingSystem.IsAndroid())
+                {
+                    try { linuxLease = new FileStream(path + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
+                    catch { Dispose(); throw; }
+                }
+                return;
+            }
             using var ready = new ManualResetEventSlim(); Exception? error = null;
             thread = new Thread(() =>
             {
@@ -187,7 +197,7 @@ public sealed class SqliteProfile : IProfileDatabase
         public void Dispose()
         {
             if (disposed) return; disposed = true;
-            stop.Set(); thread?.Join(); stop.Dispose(); lock (Active) Active.Remove(path);
+            stop.Set(); thread?.Join(); linuxLease?.Dispose(); stop.Dispose(); lock (Active) Active.Remove(path);
         }
     }
 }

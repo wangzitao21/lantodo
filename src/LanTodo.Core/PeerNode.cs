@@ -13,7 +13,7 @@ namespace LanTodo.Core;
 public sealed record Beacon(int Protocol, string DeviceId, int Port, string? Generation = null);
 public sealed record FoundPeer(string Id, IPEndPoint Endpoint, DateTimeOffset Seen, string? Generation = null);
 
-public sealed class PeerNode : IAsyncDisposable
+public sealed partial class PeerNode : IAsyncDisposable
 {
     public const int DefaultPort = 42851;
     public const int DiscoveryPort = 42852;
@@ -28,7 +28,7 @@ public sealed class PeerNode : IAsyncDisposable
     private readonly ConcurrentDictionary<string, FoundPeer> found = new();
     private readonly ConcurrentDictionary<string, byte> syncing = new();
     private readonly ConcurrentDictionary<int, Task> handlers = new();
-    private readonly SemaphoreSlim incomingSlots = new(8);
+    private readonly SemaphoreSlim incomingSlots = new(32);
     private int handlerId;
     private readonly object statusGate = new();
     private readonly Channel<bool> announceSignals = Channel.CreateBounded<bool>(1);
@@ -36,7 +36,7 @@ public sealed class PeerNode : IAsyncDisposable
     private readonly Dictionary<string, SyncSchedule> schedules = new();
     private long localVersion;
     private int requestedSync;
-    private string generation = Guid.NewGuid().ToString("N");
+    private volatile string generation = Guid.NewGuid().ToString("N");
     public TimeSpan ReconcileInterval { get; set; } = TimeSpan.FromHours(1);
     public TimeSpan DiscoveryInterval { get; set; } = TimeSpan.FromSeconds(30);
     private int successfulSyncs;
@@ -58,32 +58,43 @@ public sealed class PeerNode : IAsyncDisposable
         var token = lifetime.Token;
         store.Changed += DataChanged;
         identity.TrustChanged += RequestSync;
+        if (Replicas is not null) Replicas.Changed += RequestSync;
         try
         {
-            listener = new TcpListener(IPAddress.Any, requestedPort);
+            listener = new TcpListener(Socket.OSSupportsIPv6 ? IPAddress.IPv6Any : IPAddress.Any, requestedPort);
+            if (Socket.OSSupportsIPv6) listener.Server.DualMode = true;
             listener.Start(8);
             // Network tasks must never capture the WPF/Android UI synchronization context.
-            var jobs = new List<Task> { Task.Run(() => AcceptLoop(token)) };
+            var jobs = new List<Task> { Task.Run(() => AcceptLoop(token)), Task.Run(() => FixedPeersLoop(token)) };
+            string? discoveryError = null;
             if (enableDiscovery)
             {
-                discovery = new UdpClient(AddressFamily.InterNetwork);
-                discovery.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-                discovery.Client.Bind(new IPEndPoint(IPAddress.Any, DiscoveryPort));
-                discovery.EnableBroadcast = true;
-                discovery.MulticastLoopback = true;
-                discovery.Ttl = 1;
-                JoinInterfaces();
-                jobs.Add(Task.Run(() => DiscoverLoop(token)));
-                jobs.Add(Task.Run(() => AnnounceLoop(token)));
-                jobs.Add(Task.Run(() => AutoSyncLoop(token)));
+                try
+                {
+                    discovery = new UdpClient(AddressFamily.InterNetwork);
+                    discovery.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+                    discovery.Client.Bind(new IPEndPoint(IPAddress.Any, DiscoveryPort));
+                    discovery.EnableBroadcast = true;
+                    discovery.MulticastLoopback = true;
+                    discovery.Ttl = 1;
+                    JoinInterfaces();
+                    jobs.Add(Task.Run(() => DiscoverLoop(token)));
+                    jobs.Add(Task.Run(() => AnnounceLoop(token)));
+                    jobs.Add(Task.Run(() => AutoSyncLoop(token)));
+                }
+                catch (Exception ex) when (ex is SocketException or NetworkInformationException)
+                {
+                    discovery?.Dispose(); discovery = null; discoveryError = ex.Message;
+                }
             }
             loops = jobs.ToArray();
-            SetStatus("当前仅本机使用");
+            SetStatus(discoveryError is null ? "当前仅本机使用" : "局域网发现不可用 · NAS 固定地址连接仍可用", discoveryError);
         }
         catch (Exception ex)
         {
             lifetime.Cancel(); listener?.Stop(); discovery?.Dispose(); lifetime.Dispose(); lifetime = null;
             store.Changed -= DataChanged; identity.TrustChanged -= RequestSync;
+            if (Replicas is not null) Replicas.Changed -= RequestSync;
             SetStatus("局域网暂不可用；本机可正常使用", ex.Message);
         }
     }
@@ -91,13 +102,16 @@ public sealed class PeerNode : IAsyncDisposable
     private void DataChanged()
     {
         Interlocked.Increment(ref localVersion);
+        WakeReplicas();
         generation = Guid.NewGuid().ToString("N");
         announceSignals.Writer.TryWrite(true);
         syncSignals.Writer.TryWrite(true);
+        if (HasFixedPeers) SetStatus("已保存本机 · 等待 NAS 确认");
     }
     public void RequestSync()
     {
         Interlocked.Increment(ref localVersion);
+        WakeReplicas();
         Interlocked.Exchange(ref requestedSync,1);
         announceSignals.Writer.TryWrite(true); syncSignals.Writer.TryWrite(true);
     }
@@ -134,6 +148,11 @@ public sealed class PeerNode : IAsyncDisposable
         {
             try
             {
+                if (Replicas?.Current.LanEnabled == false)
+                {
+                    await WaitSignal(announceSignals, TimeSpan.FromSeconds(5), token);
+                    continue;
+                }
                 JoinInterfaces(); // New Wi-Fi / DHCP interfaces are enrolled without restarting the app.
                 var bytes = JsonSerializer.SerializeToUtf8Bytes(new Beacon(1, identity.Id, Port, generation), Json.Options);
                 var endpoints = new HashSet<IPAddress> { Group, IPAddress.Broadcast };
@@ -158,6 +177,7 @@ public sealed class PeerNode : IAsyncDisposable
             try
             {
                 var received = await discovery!.ReceiveAsync(token);
+                if (Replicas?.Current.LanEnabled == false) continue;
                 if (received.Buffer.Length > 1024) continue;
                 var beacon = Json.Read<Beacon>(received.Buffer);
                 if (beacon.Protocol != 1 || !Json.IsHash(beacon.DeviceId) || beacon.DeviceId == identity.Id || beacon.Port is < 1024 or > 65535) continue;
@@ -184,7 +204,7 @@ public sealed class PeerNode : IAsyncDisposable
         {
             // Explicit manual sync and network recovery also bypass an earlier failed connection's backoff.
             if (Interlocked.Exchange(ref requestedSync,0) == 1) schedules.Clear();
-            foreach (var peer in Nearby.Where(p => identity.IsTrusted(p.Id)))
+            foreach (var peer in Nearby.Where(p => identity.IsTrusted(p.Id) && (Replicas?.Current.LanEnabled ?? true) && !IsFixedPeer(p.Id)))
             {
                 if (!schedules.TryGetValue(peer.Id, out var schedule)) schedules[peer.Id] = schedule = new();
                 var version = Interlocked.Read(ref localVersion);
@@ -205,7 +225,7 @@ public sealed class PeerNode : IAsyncDisposable
                 finally { syncing.TryRemove(peer.Id, out _); }
             }
             foreach (var peer in found.Values.Where(p => DateTimeOffset.UtcNow - p.Seen > TimeSpan.FromSeconds(100))) { found.TryRemove(peer.Id, out _); schedules.Remove(peer.Id); }
-            if (Nearby.All(p => !identity.IsTrusted(p.Id))) SetStatus("已保存到本机 · 等待设备连接");
+            if (Nearby.All(p => !identity.IsTrusted(p.Id)) && !HasFixedPeers) SetStatus("已保存到本机 · 等待设备连接");
             try { await WaitSignal(syncSignals, TimeSpan.FromSeconds(5), token); } catch (OperationCanceledException) { break; }
         }
     }
@@ -256,7 +276,10 @@ public sealed class PeerNode : IAsyncDisposable
         catch { tls.Dispose(); throw; }
     }
 
-    public async Task SyncAsync(IPEndPoint endpoint, string peerId, CancellationToken token = default)
+    public async Task SyncAsync(IPEndPoint endpoint, string peerId, CancellationToken token = default) =>
+        _ = await SyncCoreAsync(endpoint, peerId, token);
+
+    private async Task<string?> SyncCoreAsync(IPEndPoint endpoint, string peerId, CancellationToken token)
     {
         if (!identity.IsTrusted(peerId)) throw new UnauthorizedAccessException("设备未授权。");
         SetStatus("正在同步");
@@ -297,7 +320,8 @@ public sealed class PeerNode : IAsyncDisposable
         if (done.Kind != "done") throw new InvalidDataException("同步确认失败。");
         LastSync = DateTimeOffset.Now;
         Interlocked.Increment(ref successfulSyncs);
-        SetStatus("已同步 · " + LastSync.Value.ToString("HH:mm:ss"));
+        SetStatus("已与 " + (identity.Devices.FirstOrDefault(d => d.Id == peerId)?.Name ?? "设备") + " 同步 · " + LastSync.Value.ToString("HH:mm:ss"));
+        return done.Generation;
     }
 
     private async Task AcceptLoop(CancellationToken token)
@@ -337,6 +361,7 @@ public sealed class PeerNode : IAsyncDisposable
                 string peerId = DeviceIdentity.Fingerprint(tls.RemoteCertificate);
                 Revision[]? snapshot = null;
                 Dictionary<string, Revision>? index = null;
+                string? snapshotGeneration = null;
                 while (!token.IsCancellationRequested)
                 {
                     var request = await Wire.Read(tls, token);
@@ -352,6 +377,7 @@ public sealed class PeerNode : IAsyncDisposable
                     switch (request.Kind)
                     {
                         case "inventory":
+                            snapshotGeneration ??= generation; // Capture before snapshot: edits during exchange must wake the next round.
                             snapshot ??= store.Export();
                             index ??= snapshot.ToDictionary(r => r.Id);
                             if (request.Offset < 0 || request.Offset > snapshot.Length) throw new InvalidDataException("分页参数无效。");
@@ -367,9 +393,20 @@ public sealed class PeerNode : IAsyncDisposable
                             reply = new("saved");
                             break;
                         case "done":
-                            await Wire.Write(tls, new("done"), token);
+                            await Wire.Write(tls, new("done", Generation: snapshotGeneration), token);
                             LastSync = DateTimeOffset.Now;
-                            SetStatus("已同步 · " + LastSync.Value.ToString("HH:mm:ss"));
+                            SetStatus("已与 " + (identity.Devices.FirstOrDefault(d => d.Id == peerId)?.Name ?? "设备") + " 同步 · " + LastSync.Value.ToString("HH:mm:ss"));
+                            return;
+                        case "watch":
+                            if (request.Generation is null || request.Generation.Length > 64) throw new InvalidDataException("变化标记无效。");
+                            // Bounded long poll fits the existing 20-second frame deadline. No history is sent while idle.
+                            for (int i = 0; i < 40 && request.Generation == generation; i++)
+                            {
+                                if (!identity.IsTrusted(peerId)) throw new UnauthorizedAccessException();
+                                await Task.Delay(250, token);
+                            }
+                            if (!identity.IsTrusted(peerId)) throw new UnauthorizedAccessException();
+                            await Wire.Write(tls, new("changed", Generation: generation), token);
                             return;
                         default: throw new InvalidDataException("未知同步命令。");
                     }
@@ -390,6 +427,7 @@ public sealed class PeerNode : IAsyncDisposable
     {
         if (lifetime is null) return;
         store.Changed -= DataChanged; identity.TrustChanged -= RequestSync;
+        if (Replicas is not null) Replicas.Changed -= RequestSync;
         lifetime.Cancel(); listener?.Stop(); discovery?.Dispose();
         try { await Task.WhenAll(loops.Concat(handlers.Values)).ConfigureAwait(false); }
         catch (OperationCanceledException) { } catch (SocketException) { } catch (ObjectDisposedException) { }

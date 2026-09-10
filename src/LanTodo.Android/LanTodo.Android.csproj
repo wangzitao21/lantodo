@@ -2,7 +2,7 @@
   <PropertyGroup>
     <TargetFramework>net10.0-android</TargetFramework><OutputType>Exe</OutputType>
     <SupportedOSPlatformVersion>26</SupportedOSPlatformVersion>
-    <ApplicationId>app.lantodo.local</ApplicationId><ApplicationVersion>6</ApplicationVersion><ApplicationDisplayVersion>$(InformationalVersion)</ApplicationDisplayVersion>
+    <ApplicationId>app.lantodo.local</ApplicationId><ApplicationVersion>8</ApplicationVersion><ApplicationDisplayVersion>$(InformationalVersion)</ApplicationDisplayVersion>
     <!-- Android requires an increasing integer build code to upgrade existing installations. -->
     <ApplicationTitle>LanTodo</ApplicationTitle><AndroidPackageFormats>apk</AndroidPackageFormats>
     <RuntimeIdentifiers>android-arm64;android-x64</RuntimeIdentifiers>

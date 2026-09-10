@@ -1,0 +1,18 @@
+services:
+  lantodo:
+    build: .
+    image: lantodo-nas:1.0
+    restart: unless-stopped
+    environment:
+      LANTODO_NAME: ${LANTODO_NAME:-LanTodo NAS}
+    ports:
+      - "${LANTODO_BIND_IP:-0.0.0.0}:${LANTODO_PORT:-42851}:42851/tcp"
+    volumes:
+      - lantodo-data:/data
+      - lantodo-backups:/backups
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+volumes:
+  lantodo-data:
+  lantodo-backups:

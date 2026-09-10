@@ -37,6 +37,7 @@ public sealed class DevicesWindow : Window
         one.Click += (_, _) => SetInterval(1); two.Click += (_, _) => SetInterval(2); PaintInterval();
         var syncNow = new Button { Content = "立即同步", HorizontalAlignment = HorizontalAlignment.Left }; syncNow.Click += (_, _) => app.Node.RequestSync(); sync.Children.Add(syncNow);
         var devices = new StackPanel(); panel.Children.Add(Card(devices));
+        panel.Children.Add(Card(new NasSettingsPanel(app)));
         var setup = new StackPanel();
         var addDevice = new Button { Content = "＋ 连接新设备", HorizontalContentAlignment = HorizontalAlignment.Left, FontWeight = FontWeights.SemiBold };
         panel.Children.Add(addDevice);

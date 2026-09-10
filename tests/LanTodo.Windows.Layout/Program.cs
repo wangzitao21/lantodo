@@ -43,6 +43,7 @@ internal static class Program
             var editor=new TodoEditor(runtime,completed);Render(editor,"windows-details.png",640,690);
             var storage=new StorageWindow(runtime);Render(storage,"windows-storage.png",620,600);
             var devices=new DevicesWindow(runtime);Render(devices,"windows-devices.png",650,620);
+            RenderElement(new NasSettingsPanel(runtime),"windows-nas.png",560,520);
             var confirmation = new ModernDialog("删除全部 3 条已完成内容？删除会同步到其他设备，修改历史仍保留。", "删除已完成内容", true);Render(confirmation,"windows-confirmation.png",460,240);
             var menu = new ContextMenu(); menu.Items.Add(new MenuItem { Header="标记为完成" }); menu.Items.Add(new MenuItem { Header="删除", Foreground=Brushes.IndianRed });RenderElement(menu,"windows-context-menu.png",185,106);
             // Render the actual calendar tree without opening a native popup.
@@ -53,7 +54,7 @@ internal static class Program
             main.Left = -32000; main.Top = -32000; main.ShowInTaskbar = false; main.Show();
             try { CheckEscape(storage); CheckEscape(devices); }
             finally { main.Close(); }
-            Console.WriteLine("PASS: window style, compact composer, date filter, completed controls; nine offscreen UI images rendered; both settings windows close with Escape from a textbox and reopen twice.");
+            Console.WriteLine("PASS: window style, compact composer, date filter, completed controls; ten offscreen UI images including NAS settings rendered; both settings windows close with Escape from a textbox and reopen twice.");
             return 0;
 
             void CheckEscape(Window window)

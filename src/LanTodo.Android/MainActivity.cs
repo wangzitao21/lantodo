@@ -307,6 +307,7 @@ public partial class MainActivity : Activity
     {
         Screen("设置");body.AddView(Text("连接与同步",19,true));
         body.AddView(Button("我的设备  ›",()=>Navigate(Devices)));
+        body.AddView(Button("NAS 辅助同步  ›",()=>Navigate(NasSettings)));
         var background=new Switch(this){Text="后台与锁屏同步",Checked=AndroidSession.BackgroundEnabled(this),TextSize=16};
         background.SetPadding(Dp(8),Dp(16),Dp(8),Dp(16));body.AddView(background);
         background.CheckedChange+=(_,args)=>

@@ -38,7 +38,9 @@ try {
     $licenseOutput = Join-Path $OutputRoot 'docs/licenses'
     New-Item -ItemType Directory -Force $licenseOutput | Out-Null
     Get-ChildItem -LiteralPath (Join-Path $ProjectRoot 'docs/licenses') -File | Copy-Item -Destination $licenseOutput -Force
-    $releaseFiles = @('windows/LanTodo.exe','android/LanTodo.apk','使用说明.md','LICENSE','THIRD_PARTY_NOTICES.md')
+    Copy-Item -LiteralPath (Join-Path $ProjectRoot 'docs/nas.md') -Destination (Join-Path $OutputRoot 'nas.md') -Force
+    & "$PSScriptRoot/package-nas.ps1" -Output (Join-Path $OutputRoot 'LanTodo-nas-source.zip')
+    $releaseFiles = @('windows/LanTodo.exe','android/LanTodo.apk','使用说明.md','nas.md','LanTodo-nas-source.zip','LICENSE','THIRD_PARTY_NOTICES.md')
     $releaseFiles += Get-ChildItem -LiteralPath $licenseOutput -File | ForEach-Object { 'docs/licenses/' + $_.Name }
     $hashes = foreach ($relative in $releaseFiles) {
         $file = Join-Path $OutputRoot $relative

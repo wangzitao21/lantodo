@@ -14,6 +14,8 @@ jobs:
           dotnet-version: '10.0.x'
       - name: Core regression tests
         run: ./scripts/test.ps1
+      - name: NAS process regression tests
+        run: ./scripts/test-nas.ps1
       - name: Windows build
         run: ./scripts/build.ps1
       - name: Windows layout and Escape regression
@@ -42,3 +44,20 @@ jobs:
         run: dotnet build src/LanTodo.Android -t:InstallAndroidDependencies -f net10.0-android -p:AcceptAndroidSdkLicenses=true
       - name: Compile debug APK with disposable debug signing
         run: dotnet build src/LanTodo.Android -c Debug
+  nas-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Linux core and NAS process regressions
+        run: |
+          dotnet run --project tests/LanTodo.Tests -c Release
+          dotnet run --project tests/LanTodo.Nas.Tests -c Release
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Build both NAS architectures
+        run: docker buildx build --platform linux/amd64,linux/arm64 --output type=oci,dest=/tmp/lantodo-nas.oci .
+      - name: Compose runtime, backup and restart smoke test
+        run: bash scripts/test-docker.sh

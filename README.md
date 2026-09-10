@@ -1,6 +1,6 @@
 <p align="center"><img src="assets/icon/lantodo.svg" width="112" alt="LanTodo 图标"></p>
 <h1 align="center">LanTodo</h1>
-<p align="center">v0.1 · 本地优先的 Windows / Android 待办清单</p>
+<p align="center">v1.0 · 本地优先的 Windows / Android 待办清单</p>
 
 记录想法、安排日期，在自己的设备之间同步。无需账号、中心服务器或云端数据库，离线也能查看和编辑。
 
@@ -12,6 +12,7 @@
 - SQLite 本机存储；导出全部清单历史，跨设备合并恢复。
 - Windows 便携运行、托盘后台同步；设备与备份窗口支持 Esc 返回。
 - Android 原生界面、逐层返回、可选后台同步。
+- 可选 NAS 辅助同步：Docker 常在线节点、多 NAS 中转、固定地址配对、离线补同步与自动历史快照，见 [NAS 部署与使用](docs/nas.md)。
 
 ## 使用
 
@@ -20,6 +21,8 @@
 Windows 将 EXE 放到可写入的普通目录后运行，自带运行时。关闭主窗口进入托盘，从托盘“退出 LanTodo”完整退出。Android 支持 8.0 及以上，覆盖升级需相同签名。详细操作见 [使用说明](docs/usage.md)。
 
 两端连接同一可互通局域网，在“设备与同步”中，一端生成配对码，另一端粘贴确认。首次配对后长期记住设备。Windows 防火墙需允许可信专用网络上的 TCP 42851 / UDP 42852。手机后台同步需允许通知和相应电池设置。电脑休眠、手机强制停止或网络隔离会暂时中断同步。
+
+也可在 Debian NAS 上用 Docker 部署常在线同步节点。手机可分别绑定家中、办公室的 NAS，两台 NAS 无需互联，手机在两处联网时携带并同步同一份清单；需要直接跨网同步时再配置 NAS 互联。见 [NAS 部署说明](docs/nas.md)。
 
 ## 数据与备份
 
@@ -35,6 +38,7 @@ C# / .NET 10，共享核心使用 Microsoft.Data.Sqlite，Windows 使用 WPF + X
 
 ```powershell
 ./scripts/test.ps1                 # 核心回归与本机 TLS 测试
+./scripts/test-nas.ps1             # NAS 进程、双节点中转与重启恢复测试
 ./scripts/build.ps1                # Windows 便携版
 ./scripts/test-windows.ps1         # 桌面布局和 Esc 检查
 ./scripts/build.ps1 -Android       # Windows + 正式签名 APK（需要密钥）
@@ -44,12 +48,13 @@ C# / .NET 10，共享核心使用 Microsoft.Data.Sqlite，Windows 使用 WPF + X
 
 | 路径 | 内容 |
 | --- | --- |
-| `src/` | 共享核心、Windows 和 Android 应用 |
-| `tests/` | 核心回归、WPF 界面检查、Android 传输探针 |
-| `scripts/` | 构建、测试、签名校验和图标生成 |
+| `src/` | 共享核心、Windows / Android 客户端、NAS 服务 |
+| `tests/` | 核心与 NAS 回归、WPF 界面检查、Android 传输探针 |
+| `scripts/` | 构建、测试、源码打包、签名校验和图标生成 |
 | `assets/icon/` | SVG 图标源文件与 PNG 预览 |
 | `docs/` | 使用、备份、架构、数据库约定和验证说明 |
 | `.github/` | 自动构建与测试配置 |
+| `Dockerfile` / `compose.yaml` | NAS 容器构建与部署 |
 
 本机 `.tools/`、`release/`、数据库、密钥及中间产物被 Git 忽略，不随源码上传。图标为青绿色圆角底与白色 L / 勾形，通过 `scripts/generate-icons.ps1` 生成各平台资源。
 

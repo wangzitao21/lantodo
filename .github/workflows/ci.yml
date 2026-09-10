@@ -1,0 +1,44 @@
+name: Build and test
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Core regression tests
+        run: ./scripts/test.ps1
+      - name: Windows build
+        run: ./scripts/build.ps1
+      - name: Windows layout and Escape regression
+        run: ./scripts/test-windows.ps1
+      - name: Upload Windows package and UI previews
+        uses: actions/upload-artifact@v4
+        with:
+          name: LanTodo-windows
+          path: |
+            release/
+            .tools/test-results/current/*.png
+  android:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install Android workload
+        run: dotnet workload install android
+      - name: Install Android dependencies
+        run: dotnet build src/LanTodo.Android -t:InstallAndroidDependencies -f net10.0-android -p:AcceptAndroidSdkLicenses=true
+      - name: Compile debug APK with disposable debug signing
+        run: dotnet build src/LanTodo.Android -c Debug

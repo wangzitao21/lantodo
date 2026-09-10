@@ -1,0 +1,15 @@
+<resources>
+  <style name="LanTodoTheme" parent="android:style/Theme.Material.Light.NoActionBar">
+    <item name="android:fontFamily">sans</item>
+    <item name="android:colorAccent">#167D8D</item>
+    <item name="android:windowLightStatusBar">true</item>
+    <item name="android:windowLightNavigationBar">true</item>
+    <item name="android:statusBarColor">#F5F7FA</item>
+    <item name="android:navigationBarColor">#F5F7FA</item>
+    <item name="android:windowActionModeOverlay">true</item>
+    <item name="android:windowBackground">#F5F7FA</item>
+  </style>
+  <style name="LanTodoLaunchTheme" parent="LanTodoTheme">
+    <item name="android:windowBackground">@drawable/launch_background</item>
+  </style>
+</resources>

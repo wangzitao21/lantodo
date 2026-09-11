@@ -9,6 +9,7 @@ static class ReplicaTests
         tests.Add(("NAS settings validate addresses and survive restart", Settings));
         tests.Add(("NAS relay: non-overlapping clients, two NAS, offline conflict/delete, pause and restart", Relay));
         tests.Add(("NAS watch wakes without inventory polling; unreachable peer cannot block healthy peer; revoke denies writes", Watch));
+        tests.Add(("Device nicknames relay and revoked/deleted bindings converge, including reconnect", Lifecycle));
     }
     static void Check(bool condition, string message) { if (!condition) throw new Exception(message); }
     static async Task Until(Func<bool> condition)
@@ -117,6 +118,36 @@ static class ReplicaTests
         await Task.Delay(1500);
         Check(!nas.Has(rejected.Id), "Revoked client wrote a revision");
         Check(client.Has(rejected.Id), "Failed upload lost local data");
+    }
+    static async Task Lifecycle()
+    {
+        using var temp = new Sandbox();
+        await using var nas = new Peer(temp.Path("nas"));
+        await using var phone = new Peer(temp.Path("phone"));
+        await using var pc = new Peer(temp.Path("pc"));
+        nas.Node.Start(false); phone.Node.Start(false); pc.Node.Start(false);
+        await phone.Pair(nas); await pc.Pair(nas);
+        var original = phone.Add("昵称不应重写历史");
+        phone.Identity.Rename(phone.Identity.Id, "我的手机");
+        await Until(() => pc.Identity.DisplayName(phone.Identity.Id, "") == "我的手机");
+        nas.Identity.Rename(phone.Identity.Id, "工作手机");
+        await Until(() => phone.Identity.Name == "工作手机" && pc.Identity.DisplayName(phone.Identity.Id, "") == "工作手机");
+        Check(phone.Store.Export().Single(r => r.Id == original.Id).Body.DeviceName == "phone", "Immutable source revision was rewritten");
+        nas.Identity.Revoke(phone.Identity.Id);
+        await Until(() => !phone.Identity.IsTrusted(nas.Identity.Id));
+        Check(phone.Identity.RevokedDevices.Any(d => d.Id == nas.Identity.Id), "Revoke discarded rebind record");
+        await phone.Pair(nas);
+        await Until(() => phone.Identity.IsTrusted(nas.Identity.Id));
+        await phone.Node.DisposeAsync();
+        nas.Identity.Revoke(phone.Identity.Id); nas.Identity.DeleteRevokedDevice(phone.Identity.Id);
+        phone.Node.Start(false);
+        await Until(() => phone.Settings.Current.Endpoints!.Length == 0);
+        Check(!phone.Identity.Devices.Any(d => d.Id == nas.Identity.Id) && !phone.Identity.RevokedDevices.Any(d => d.Id == nas.Identity.Id), "Deleted binding remains on terminal");
+        Check(!nas.Identity.Invites.Any(i => i.DeviceId == phone.Identity.Id), "Deleted device still has visible invitation record");
+        Check(phone.Has(original.Id), "Deleting a binding removed task content");
+        await phone.Pair(nas);
+        await Until(() => phone.Identity.IsTrusted(nas.Identity.Id));
+        Check(!nas.Identity.WasDeleted(phone.Identity.Id), "Fresh pairing failed to clear tombstone");
     }
     sealed class Peer : IAsyncDisposable
     {

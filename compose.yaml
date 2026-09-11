@@ -1,12 +1,15 @@
 services:
   lantodo:
     build: .
-    image: lantodo-nas:1.0
+    image: lantodo-nas:1.0.1
     restart: unless-stopped
     environment:
       LANTODO_NAME: ${LANTODO_NAME:-LanTodo NAS}
+      LANTODO_ADMIN_TOKEN: ${LANTODO_ADMIN_TOKEN:-}
+      LANTODO_WEB_PORT: 42000
     ports:
       - "${LANTODO_BIND_IP:-0.0.0.0}:${LANTODO_PORT:-42851}:42851/tcp"
+      - "${LANTODO_BIND_IP:-0.0.0.0}:${LANTODO_WEB_PORT:-42000}:42000/tcp"
     volumes:
       - lantodo-data:/data
       - lantodo-backups:/backups

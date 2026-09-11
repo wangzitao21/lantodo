@@ -5,10 +5,15 @@ using System.Text.Json;
 namespace LanTodo.Core;
 
 public sealed record TodoData(string Title, string Notes = "", string? Date = null,
-    string? Time = null, bool Completed = false, bool Deleted = false)
+    string? Time = null, bool Completed = false, bool Deleted = false,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] Attachment[]? Attachments = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)] bool Purged = false)
 {
     public void Validate()
     {
+        if (Purged && !Deleted) throw new InvalidDataException("彻底清除的记录必须处于删除状态。");
+        if (Attachments is { Length: > 32 }) throw new InvalidDataException("每条消息最多添加 32 个附件。");
+        if (Attachments is not null) foreach (var attachment in Attachments) attachment.Validate();
         if (string.IsNullOrWhiteSpace(Title) || Title.Length > 500 || Notes is null || Notes.Length > 32000)
             throw new InvalidDataException("标题不能为空且不能超过 500 字；备注不能超过 32000 字。");
         if (Date is not null && !DateOnly.TryParseExact(Date, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out _))
@@ -51,6 +56,7 @@ public sealed class StaleEditException : Exception
 
 public static class Json
 {
+    public const int MaxRevisionBytes = 512 * 1024;
     public static readonly JsonSerializerOptions Options = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, MaxDepth = 32 };
     public static bool IsHash(string? s) => s is { Length: 64 } && s.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f');
     public static T Read<T>(byte[] data) => JsonSerializer.Deserialize<T>(data, Options) ?? throw new InvalidDataException("空数据。");

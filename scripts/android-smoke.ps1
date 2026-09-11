@@ -25,7 +25,7 @@ for ($attempt = 0; $attempt -lt 10; $attempt++) {
     $dump = Invoke-Adb shell uiautomator dump /sdcard/lantodo-smoke.xml
     if (($dump -join "`n") -match 'dumped to:') {
         [xml]$ui = (Invoke-Adb shell cat /sdcard/lantodo-smoke.xml) -join "`n"
-        if ($ui.SelectSingleNode('//node[@package="app.lantodo.local" and @content-desc="添加待办"]')) { $ready = $true; break }
+        if ($ui.SelectSingleNode('//node[@package="app.lantodo.local" and (@content-desc="添加图片或文件" or @content-desc="发送消息")]')) { $ready = $true; break }
     }
     Start-Sleep -Seconds 1
 }

@@ -3,11 +3,11 @@ $ErrorActionPreference = 'Stop'
 $projectPath = Split-Path -Parent $PSScriptRoot
 [xml]$properties = Get-Content -LiteralPath (Join-Path $projectPath 'Directory.Build.props') -Raw
 $version = $properties.Project.PropertyGroup.InformationalVersion
-if (-not $Output) { $Output = "release/v$version/LanTodo-v$version-source.zip" }
+if (-not $Output) { $Output = "release/LanTodo-v$version-source.zip" }
 $outputPath = if ([IO.Path]::IsPathRooted($Output)) { $Output } else { Join-Path $projectPath $Output }
 $files = @(& git -c core.quotepath=false -C $projectPath ls-files --cached --others --exclude-standard) | Sort-Object -Unique
 if ($LASTEXITCODE -ne 0 -or $files.Count -eq 0) { throw '请从有效的 Git 源码仓库运行此脚本。' }
-$excluded = '(^|/)(\.git|\.tools|release|bin|obj|backups|revisions|TestResults)/|\.(sqlite[^/]*|db|pfx|p12|pem|key|jks|keystore|apk|aab|exe|zip|log|tmp|binlog)$|(^|/)(\.env(\..*)?|password\.txt|LanTodo\.location)$'
+$excluded = '(^|/)(\.git|\.tools|release|bin|obj|backups|revisions|attachments|spaces|\.transfers|TestResults)/|\.(sqlite[^/]*|db|pfx|p12|pem|key|jks|keystore|apk|aab|exe|zip|log|tmp|binlog)$|(^|/)(\.env(\..*)?|password\.txt|LanTodo\.location|attachment-index\.json)$'
 foreach ($file in $files) {
     if ($file -match $excluded -and $file -notmatch '(^|/)\.env\.example$') { throw "源码列表包含非发布文件，请先从 Git 移除：$file" }
 }

@@ -46,3 +46,14 @@ compose.override.yml
 TestResults/
 Thumbs.db
 .DS_Store
+admin-token
+attachments/
+*.part
+
+/LanTodo-data/
+
+admin-keys/
+
+attachment-index.json
+.transfers/
+/spaces/

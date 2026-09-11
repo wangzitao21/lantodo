@@ -20,7 +20,7 @@ public partial class App : Application
         {
             var dataArg = Array.IndexOf(e.Args, "--data-dir");
             explicitProfile = dataArg >= 0 && dataArg + 1 < e.Args.Length;
-            string path = explicitProfile ? Path.GetFullPath(e.Args[dataArg + 1]) : DataLocation.Read();
+            string path = explicitProfile ? Path.GetFullPath(e.Args[dataArg + 1]) : DataLocation.PortableRoot;
             instance = new SingleInstance(path);
             if (!instance.IsPrimary)
             {
@@ -28,16 +28,22 @@ public partial class App : Application
                 Shutdown(); return;
             }
             if (e.Args.Contains("--quit")) { Shutdown(); return; }
-            if (!explicitProfile && !File.Exists(Path.Combine(path, SqliteProfile.FileName)) && !File.Exists(DataLocation.ConfigPath))
+            if (!explicitProfile && !File.Exists(Path.Combine(path, SqliteProfile.FileName)))
             {
-                var previous = DataLocation.PreviousProfile();
-                if (previous is not null) LegacyProfile.Upgrade(previous, path);
+                var previous = File.Exists(DataLocation.ConfigPath) ? DataLocation.Read() : DataLocation.PreviousProfile();
+                if (previous is not null && !Path.GetFullPath(previous).TrimEnd(Path.DirectorySeparatorChar).Equals(Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase))
+                {
+                    using var previousInstance = new SingleInstance(previous);
+                    if (!previousInstance.IsPrimary) throw new IOException("请先退出使用旧数据目录的 LanTodo，再启动新版。");
+                    await using var previousApp = new AppRuntime(previous,Environment.MachineName);
+                    await previousApp.MoveToAsync(path, () => DataLocation.Save(path));
+                }
             }
             runtime = new(path, Environment.MachineName);
             MainWindow = new MainWindow(runtime);
             var menu = new System.Windows.Forms.ContextMenuStrip();
             menu.Items.Add("打开LanTodo", null, (_, _) => ShowWindow());
-            menu.Items.Add("立即同步", null, (_, _) => runtime.Node.RequestSync());
+            menu.Items.Add("立即同步", null, (_, _) => runtime.RequestSync());
             menu.Items.Add(new System.Windows.Forms.ToolStripSeparator());
             menu.Items.Add("退出LanTodo", null, async (_, _) => await ExitAsync());
             tray = new System.Windows.Forms.NotifyIcon
@@ -74,6 +80,7 @@ public partial class App : Application
     public async Task MigrateAsync(string destination)
     {
         if (runtime is null || migrating || IsExiting) return;
+        if (MainWindow is MainWindow editor && editor.HasPendingAttachments) throw new IOException("请先发送或移除待发送附件，再更改数据位置。");
         migrating = true; MainWindow!.IsEnabled = false;
         var previousConfig = File.Exists(DataLocation.ConfigPath) ? File.ReadAllBytes(DataLocation.ConfigPath) : null;
         SingleInstance? nextInstance = null; bool moved = false;
@@ -82,10 +89,10 @@ public partial class App : Application
             nextInstance = new SingleInstance(destination);
             if (!nextInstance.IsPrimary) throw new IOException("目标目录已被另一个窗口使用。");
             await runtime.SetNetworkAsync(false);
-            await Task.Run(() => ProfileMigration.MoveTo(runtime.Store, destination, () =>
+            await runtime.MoveToAsync(destination, () =>
             {
                 if (!explicitProfile) DataLocation.Save(destination);
-            }));
+            });
             moved = true;
             instance?.Dispose(); instance = nextInstance; nextInstance = null;
             instance.Listen(command => Dispatcher.BeginInvoke(async () => { if (command == 2) await ExitAsync(); else ShowWindow(); }));

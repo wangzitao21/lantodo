@@ -1,5 +1,7 @@
-param([string]$Apk = 'release/android/LanTodo.apk')
+param([string]$Apk)
 . "$PSScriptRoot\env.ps1"
+[xml]$properties = Get-Content -LiteralPath (Join-Path $ProjectRoot 'Directory.Build.props') -Raw
+if (-not $Apk) { $Apk = "release/LanTodo-v$($properties.Project.PropertyGroup.InformationalVersion)-Android.apk" }
 $localJdk = Join-Path $ProjectRoot '.tools\jdk'
 if (Test-Path -LiteralPath $localJdk) { $env:JAVA_HOME = $localJdk }
 $sdkPath = Join-Path $ProjectRoot '.tools\android-sdk'

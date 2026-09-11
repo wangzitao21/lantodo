@@ -174,7 +174,7 @@ AsyncTest("TLS C/D/G/I: real encrypted pairing + two-way sync + revocation", asy
     Check(ia.IsTrusted(ib.Id) && ib.IsTrusted(ia.Id)); Check(State(a)==State(b));
     Edit(a,ra,"电脑修改"); Edit(b,ra,"手机修改",Phone); await na.SyncAsync(eb,ib.Id);
     Check(a.List().Single(v=>v.Id==ra.Body.TodoId).Conflict); Check(State(a)==State(b));
-    ia.Revoke(ib.Id); await ThrowsAsync<IOException>(()=>nb.SyncAsync(ea,ia.Id));
+    ia.Revoke(ib.Id); await ThrowsAsync<UnauthorizedAccessException>(()=>nb.SyncAsync(ea,ia.Id));
     Check(a.Export().Length==4);
 });
 AsyncTest("TLS denies unpaired reader even with client certificate", async () =>
@@ -316,10 +316,10 @@ Test("Bulk completed deletion keeps history, skips new edits, and converges", ()
 AsyncTest("Profile move preserves history, settings, identity and pairing and removes source", async () =>
 {
     using var temp=new Sandbox();
-    var source=temp.Path("source");var destination=temp.Path("destination");string identity;string before;
+    var source=temp.Path("source");var destination=temp.Path("destination");string identity;string before; using var phoneStore = new TodoStore(temp.Path("phone")); using var phoneIdentity = new DeviceIdentity(phoneStore.Database,"手机");
     await using(var runtime=new AppRuntime(source,"电脑"))
     {
-        runtime.Identity.Trust(Phone,"手机"); runtime.SetReconcileHours(2);
+        runtime.Identity.Space!.Add(phoneIdentity.Certificate,"手机"); runtime.SetReconcileHours(2);
         var todo=Add(runtime.Store,"迁移前内容");Edit(runtime.Store,todo,"保留完整历史");
         before=State(runtime.Store);identity=runtime.Identity.Id;
         ProfileMigration.MoveTo(runtime.Store,destination);
@@ -329,7 +329,7 @@ AsyncTest("Profile move preserves history, settings, identity and pairing and re
         runtime.SetReconcileHours(1);runtime.SetReconcileHours(2);
     }
     await using var reopened=new AppRuntime(destination,"不应覆盖");
-    Check(State(reopened.Store)==before && reopened.Identity.Id==identity && reopened.Identity.IsTrusted(Phone) && reopened.ReconcileHours==2);
+    Check(State(reopened.Store)==before && reopened.Identity.Id==identity && reopened.Identity.IsTrusted(phoneIdentity.Id) && reopened.ReconcileHours==2);
 });
 Test("Profile migration refuses existing profiles and nested destinations", () =>
 {
@@ -434,6 +434,10 @@ Test("An unversioned foreign SQLite database is rejected without creating applic
     Throws<InvalidDataException>(()=>new TodoStore(root));Check(before.SequenceEqual(File.ReadAllBytes(file)));
 });
 ReplicaTests.Register(tests);
+SpaceTests.Register(tests);
+AttachmentTests.Register(tests);
+WorkspaceTests.Register(tests);
+if(args.Length>0)tests.RemoveAll(t=>!args.Any(a=>t.Name.Contains(a,StringComparison.OrdinalIgnoreCase)));
 int failed=0;
 foreach(var test in tests)
 {

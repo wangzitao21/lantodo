@@ -2,10 +2,18 @@ param([switch]$Android, [string]$OutputRoot = 'release')
 . "$PSScriptRoot\env.ps1"
 Push-Location $ProjectRoot
 try {
-    $staging = Join-Path $ProjectRoot '.tools/build-output'
-    Invoke-Dotnet publish src/LanTodo.Windows -c Release -r win-x64 --self-contained true '-p:PublishSingleFile=true' '-p:IncludeNativeLibrariesForSelfExtract=true' -o (Join-Path $staging 'windows')
-    New-Item -ItemType Directory -Force (Join-Path $OutputRoot 'windows') | Out-Null
-    Copy-Item -LiteralPath (Join-Path $staging 'windows/LanTodo.exe') -Destination (Join-Path $OutputRoot 'windows/LanTodo.exe') -Force
+    [xml]$properties = Get-Content -LiteralPath (Join-Path $ProjectRoot 'Directory.Build.props') -Raw
+    $version = $properties.Project.PropertyGroup.InformationalVersion
+    $windowsName = "LanTodo-v$version-Windows.zip"
+    $androidName = "LanTodo-v$version-Android.apk"
+    $nasName = "LanTodo-v$version-NAS.zip"
+    $sourceName = "LanTodo-v$version-source.zip"
+    $staging = Join-Path $ProjectRoot ('.tools/build-output/' + [Guid]::NewGuid().ToString('N'))
+    $windowsFolder = Join-Path $staging "LanTodo-v$version-Windows"
+    Invoke-Dotnet publish src/LanTodo.Windows -c Release -r win-x64 --self-contained true '-p:PublishSingleFile=false' '-p:IncludeNativeLibrariesForSelfExtract=false' '-p:DebugType=None' '-p:DebugSymbols=false' -o $windowsFolder
+    New-Item -ItemType Directory -Force $OutputRoot | Out-Null
+    & "$PSScriptRoot/package-release-docs.ps1" -OutputRoot $windowsFolder
+    Compress-Archive -LiteralPath $windowsFolder -DestinationPath (Join-Path $OutputRoot $windowsName) -Force
     if ($Android) {
         $androidOptions = @()
         $sdkPath = Join-Path $ProjectRoot '.tools\android-sdk'
@@ -28,20 +36,12 @@ try {
         }
         if (-not $env:LANTODO_KEYSTORE) { throw '发布 Android 升级包需要原发布密钥，请设置 LANTODO_KEYSTORE 和 LANTODO_KEY_PASSWORD。' }
         Invoke-Dotnet publish src/LanTodo.Android -c Release @androidOptions @signing -o (Join-Path $staging 'android')
-        New-Item -ItemType Directory -Force (Join-Path $OutputRoot 'android') | Out-Null
-        Copy-Item -LiteralPath (Join-Path $staging 'android/app.lantodo.local-Signed.apk') -Destination (Join-Path $OutputRoot 'android/LanTodo.apk') -Force
+        Copy-Item -LiteralPath (Join-Path $staging 'android/app.lantodo.local-Signed.apk') -Destination (Join-Path $OutputRoot $androidName) -Force
     }
-    Copy-Item -LiteralPath (Join-Path $ProjectRoot 'docs/usage.md') -Destination (Join-Path $OutputRoot '使用说明.md') -Force
-    foreach ($name in @('LICENSE','THIRD_PARTY_NOTICES.md')) {
-        Copy-Item -LiteralPath (Join-Path $ProjectRoot $name) -Destination (Join-Path $OutputRoot $name) -Force
-    }
-    $licenseOutput = Join-Path $OutputRoot 'docs/licenses'
-    New-Item -ItemType Directory -Force $licenseOutput | Out-Null
-    Get-ChildItem -LiteralPath (Join-Path $ProjectRoot 'docs/licenses') -File | Copy-Item -Destination $licenseOutput -Force
-    Copy-Item -LiteralPath (Join-Path $ProjectRoot 'docs/nas.md') -Destination (Join-Path $OutputRoot 'nas.md') -Force
-    & "$PSScriptRoot/package-nas.ps1" -Output (Join-Path $OutputRoot 'LanTodo-nas-source.zip')
-    $releaseFiles = @('windows/LanTodo.exe','android/LanTodo.apk','使用说明.md','nas.md','LanTodo-nas-source.zip','LICENSE','THIRD_PARTY_NOTICES.md')
-    $releaseFiles += Get-ChildItem -LiteralPath $licenseOutput -File | ForEach-Object { 'docs/licenses/' + $_.Name }
+    & "$PSScriptRoot/package-release-docs.ps1" -OutputRoot $OutputRoot
+    & "$PSScriptRoot/package-nas.ps1" -Output (Join-Path $OutputRoot $nasName)
+    & "$PSScriptRoot/package-source.ps1" -Output (Join-Path $OutputRoot $sourceName)
+    $releaseFiles = @($windowsName,$androidName,$nasName,$sourceName,'使用说明.md','许可证与第三方声明.txt')
     $hashes = foreach ($relative in $releaseFiles) {
         $file = Join-Path $OutputRoot $relative
         if (Test-Path -LiteralPath $file) { "$((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash)  $relative" }

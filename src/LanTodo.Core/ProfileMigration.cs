@@ -18,6 +18,23 @@ public static class ProfileMigration
             throw new IOException("目标文件夹已有LanTodo数据，请选择其他位置，避免覆盖。");
         Directory.CreateDirectory(target);
         if (source.Database is not SqliteProfile database) throw new NotSupportedException("当前存储不支持位置迁移。");
+        var attachmentTarget = new AttachmentStore(() => target);
+        foreach (var attachment in source.ActiveAttachments().DistinctBy(a => a.Hash))
+        {
+            if (!source.Attachments.Has(attachment)) continue;
+            using var input = File.OpenRead(source.Attachments.PathFor(attachment.Hash));
+            if (attachmentTarget.Add(input, attachment.Name, attachment.Kind).Hash != attachment.Hash) throw new IOException("附件迁移校验失败。");
+        }
+        attachmentTarget.Invalidate(source.Attachments.InvalidKeys);
+        var originals = source.ActiveAttachments().Where(a => source.Attachments.Has(a)).ToArray();
         database.MoveTo(target, activateLocation ?? (() => { }));
+        var previousAttachments = new AttachmentStore(() => origin);
+        foreach (var attachment in originals)
+        {
+            // Activation already committed. A locked old copy must not turn success into a rollback.
+            try { previousAttachments.Delete(attachment.Hash); }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
     }
 }

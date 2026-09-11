@@ -66,7 +66,7 @@ public sealed class SqliteProfile : IProfileDatabase
             while (reader.Read())
             {
                 var bytes = (byte[])reader[2];
-                if (bytes.Length > 256 * 1024) throw new InvalidDataException("数据库记录过大。");
+                if (bytes.Length > Json.MaxRevisionBytes) throw new InvalidDataException("数据库记录过大。");
                 var r = Json.Read<Revision>(bytes); r.Validate();
                 if (r.Id != reader.GetString(0) || r.Body.TodoId != reader.GetString(1)) throw new InvalidDataException("数据库记录校验失败。");
                 result.Add(r);
@@ -112,6 +112,15 @@ public sealed class SqliteProfile : IProfileDatabase
         {
             using var target = Open(destinationFile);
             connection.BackupDatabase(target);
+        }
+    }
+    internal void ClearRevisions()
+    {
+        lock (gate)
+        {
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = "PRAGMA secure_delete=ON; DELETE FROM revisions;";
+            cmd.ExecuteNonQuery();
         }
     }
     internal void MoveTo(string destination, Action activateLocation)

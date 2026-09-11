@@ -39,23 +39,29 @@ $env:LANTODO_KEYSTORE = '你的密钥绝对路径'
 
 ## 输出与版本
 
-应用对外版本为 **v1.0**。共享配置 `Directory.Build.props` 中的 `Version=1.0.0` 是 .NET 数值形式，`InformationalVersion=1.0` 用于展示。Windows manifest 使用 `1.0.0.0`；Android `versionName` 从共享配置读取，`versionCode=8` 是递增安装序号，保证已有开发版可覆盖升级。SQLite schema、同步和备份格式继续保持 v1，不随应用版本改动。
+应用对外版本保持 **v1.0.1**。共享配置 `Directory.Build.props` 中的 `Version` 和 `InformationalVersion` 均为 `1.0.1`。Android `versionName` 从共享配置读取，`versionCode=13` 为安装序号，本次修订递增安装序号，对外仍显示 v1.0.1，使用原签名覆盖升级。SQLite schema、任务版本和备份格式继续保持 v1；空间授权协议使用 lantodo2，须全端升级；已有统一空间可直接保留，旧版逐台配对需重新加入。
 
-展示版本不附加 Git 提交哈希。NAS 本地镜像标签为 `lantodo-nas:1.0`，OCI 版本标签为 `1.0`；升级版本时一并更新 Dockerfile 与 Compose。
+展示版本不附加 Git 提交哈希。NAS 本地镜像标签为 `lantodo-nas:1.0.1`，OCI 版本标签为 `1.0.1`；升级版本时一并更新 Dockerfile 与 Compose。
 
-发布文件默认写入 `release/windows/LanTodo.exe` 与 `release/android/LanTodo.apk`，支持 `-OutputRoot <目录>`。Windows 为 x64 自带运行时单文件程序，Android APK 支持 arm64 / x64、Android 8.0 及以上。先完整退出旧 Windows 程序，再覆盖其 EXE。
+发布文件默认直接平铺到 `release/`，不创建平台或版本子目录，支持 `-OutputRoot <目录>`：
 
-`release/` 为本机生成目录，不纳入 Git。构建同时生成 NAS 精简部署源码包 `LanTodo-nas-source.zip`、使用说明、NAS 说明、许可证、第三方声明和 `SHA256SUMS.txt`。这些文件作为 GitHub Release 附件发布，不把整个便携程序目录或数据库提交到源码仓库。
+- `LanTodo-v1.0.1-Windows.zip`：Windows x64 文件夹式便携包，完整解压后运行 `LanTodo.exe`，依赖不自解压到 Temp。
+- `LanTodo-v1.0.1-Android.apk`：Android 8.0+，arm64 / x64，正式签名。
+- `LanTodo-v1.0.1-NAS.zip`：Docker NAS 精简部署源码。
+- `LanTodo-v1.0.1-source.zip`：完整源码、测试、文档与 CI。
+- `使用说明.md`：客户端、NAS 部署及同步策略的合并说明。
+- `许可证与第三方声明.txt`：项目许可证及第三方许可全文。
+- `SHA256SUMS.txt`：发布文件校验值。
 
-可将同版本文件放在独立目录，避免替换正在运行的程序：
+文件名中的版本自动读取 `Directory.Build.props`。先完整退出 Windows 程序，再替换 EXE。已有 `LanTodo.location` 和运行数据库不属于发布附件，构建不会覆盖它们。
 
 ```powershell
-./scripts/build.ps1 -Android -OutputRoot release/v1.0
-./scripts/check-apk.ps1 -Apk release/v1.0/android/LanTodo.apk
+./scripts/build.ps1 -Android
+./scripts/check-apk.ps1
 ./scripts/package-source.ps1
 ```
 
-`package-source.ps1` 默认生成 `release/v1.0/LanTodo-v1.0-source.zip`，包含当前源码、测试、文档、CI 和 Docker 配置；不含 `.git`、工具链、构建产物、数据库或密钥。此包与仅用于 NAS 构建的精简源码包不同。公开二进制时提供完整源码包或对应 Git 标签的源码归档。
+`release/` 不纳入 Git。完整源码包排除工具链、构建产物、数据库和密钥；公开二进制时一并提供完整源码包或对应 Git 标签源码。
 
 ## GitHub
 
@@ -64,8 +70,8 @@ $env:LANTODO_KEYSTORE = '你的密钥绝对路径'
 git add .
 git diff --cached --name-only
 git diff --cached --stat
-git commit -m "Prepare v1.0 release"
-git tag v1.0
+git commit -m "Prepare v1.0.1 release"
+git tag v1.0.1
 # 在 GitHub 创建空仓库，再按页面提示添加 origin 和推送。
 ```
 

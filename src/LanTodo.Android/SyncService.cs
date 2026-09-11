@@ -59,10 +59,10 @@ public sealed class SyncService : Service
                 var power = (PowerManager)GetSystemService(PowerService)!;
                 wakeLock = power.NewWakeLock(WakeLockFlags.Partial, "lantodo:connected-devices");
                 wakeLock!.SetReferenceCounted(false);
-                app.Identity.TrustChanged += UpdateWakeLock;
+                app.MembershipChanged += UpdateWakeLock;
                 UpdateWakeLock();
                 connectivity = (ConnectivityManager)GetSystemService(ConnectivityService)!;
-                networkObserver = new NetworkObserver(app.Node);
+                networkObserver = new NetworkObserver(app);
                 connectivity.RegisterDefaultNetworkCallback(networkObserver);
             }
             AndroidSession.ServiceRunning = true;
@@ -73,14 +73,14 @@ public sealed class SyncService : Service
     private void UpdateWakeLock()
     {
         // Only hold CPU availability while maintaining an explicitly enabled paired-device LAN service.
-        if (app?.Identity.Devices.Length > 0) { if (wakeLock?.IsHeld == false) wakeLock.Acquire(); }
+        if (app?.Spaces.Any(s=>s.Member && s.Devices>1) == true) { if (wakeLock?.IsHeld == false) wakeLock.Acquire(); }
         else if (wakeLock?.IsHeld == true) wakeLock.Release();
     }
     public override async void OnDestroy()
     {
         destroyed = true;
         AndroidSession.ServiceRunning = false;
-        if (app is not null) app.Identity.TrustChanged -= UpdateWakeLock;
+        if (app is not null) app.MembershipChanged -= UpdateWakeLock;
         if (networkObserver is not null) connectivity?.UnregisterNetworkCallback(networkObserver);
         if (multicastLock?.IsHeld == true) multicastLock.Release();
         if (wakeLock?.IsHeld == true) wakeLock.Release();
@@ -89,7 +89,7 @@ public sealed class SyncService : Service
         try { await AndroidSession.RefreshNetworkAsync(); }
         catch (Exception ex) { global::Android.Util.Log.Warn("LanTodo", "Stopping sync: " + ex.GetType().Name); }
     }
-    private sealed class NetworkObserver(PeerNode node) : ConnectivityManager.NetworkCallback
+    private sealed class NetworkObserver(AppRuntime node) : ConnectivityManager.NetworkCallback
     {
         public override void OnAvailable(Network network) => node.RequestSync();
         public override void OnLost(Network network) => node.RequestSync();

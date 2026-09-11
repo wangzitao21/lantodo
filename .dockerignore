@@ -8,8 +8,14 @@
 !src/LanTodo.Nas/
 !src/LanTodo.Nas/*.cs
 !src/LanTodo.Nas/*.csproj
+!src/LanTodo.Nas/Web/
+!src/LanTodo.Nas/Web/**
 !LICENSE
 !THIRD_PARTY_NOTICES.md
 !docs/
 !docs/licenses/
 !docs/licenses/**
+
+attachment-index.json
+.transfers/
+/spaces/

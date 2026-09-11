@@ -18,7 +18,7 @@ public static class ReplicaAddress
             !Uri.TryCreate("tcp://" + address, UriKind.Absolute, out var uri) ||
             uri.HostNameType == UriHostNameType.Unknown || uri.UserInfo.Length != 0 ||
             uri.AbsolutePath != "/" || uri.Query.Length != 0 || uri.Fragment.Length != 0 || uri.Port is < 1 or > 65535)
-            throw new InvalidDataException("请输入 NAS 的 IP 或域名及端口，例如 nas.home:42851。");
+            throw new InvalidDataException("请输入设备的 IP 或域名及同步端口，例如 device.home:42851。");
         return uri;
     }
 
@@ -28,7 +28,7 @@ public static class ReplicaAddress
         var addresses = await Dns.GetHostAddressesAsync(uri.DnsSafeHost, token);
         var endpoints = addresses.Where(a => a.AddressFamily is AddressFamily.InterNetwork or AddressFamily.InterNetworkV6)
             .Select(a => new IPEndPoint(a, uri.Port)).ToArray();
-        if (endpoints.Length == 0) throw new IOException("NAS 地址没有可用的 IP。");
+        if (endpoints.Length == 0) throw new IOException("设备地址没有可用的 IP。");
         return endpoints;
     }
 }

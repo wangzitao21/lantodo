@@ -2,6 +2,11 @@
   <style name="LanTodoTheme" parent="android:style/Theme.Material.Light.NoActionBar">
     <item name="android:fontFamily">sans</item>
     <item name="android:colorAccent">#167D8D</item>
+    <item name="android:alertDialogTheme">@style/LanTodoDialogTheme</item>
+    <item name="android:datePickerDialogTheme">@style/LanTodoDialogTheme</item>
+    <item name="android:timePickerDialogTheme">@style/LanTodoDialogTheme</item>
+    <item name="android:textColorPrimary">#1F2937</item>
+    <item name="android:textColorSecondary">#708090</item>
     <item name="android:windowLightStatusBar">true</item>
     <item name="android:windowLightNavigationBar">true</item>
     <item name="android:statusBarColor">#F5F7FA</item>
@@ -11,5 +16,15 @@
   </style>
   <style name="LanTodoLaunchTheme" parent="LanTodoTheme">
     <item name="android:windowBackground">@drawable/launch_background</item>
+  </style>
+  <style name="LanTodoDialogTheme" parent="android:style/Theme.Material.Light.Dialog.Alert">
+    <item name="android:fontFamily">sans</item>
+    <item name="android:colorAccent">#167D8D</item>
+    <item name="android:textColorPrimary">#1F2937</item>
+    <item name="android:textColorSecondary">#708090</item>
+    <item name="android:windowBackground">@drawable/dialog_background</item>
+    <item name="android:windowMinWidthMajor">88%</item>
+    <item name="android:windowMinWidthMinor">88%</item>
+    <item name="android:backgroundDimAmount">0.3</item>
   </style>
 </resources>

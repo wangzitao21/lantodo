@@ -1,6 +1,14 @@
-param([string]$Executable = 'release/windows/LanTodo.exe')
+param([string]$Executable)
 . "$PSScriptRoot\env.ps1"
-$appExe = (Resolve-Path -LiteralPath (Join-Path $ProjectRoot $Executable)).Path
+[xml]$properties = Get-Content -LiteralPath (Join-Path $ProjectRoot 'Directory.Build.props') -Raw
+if (-not $Executable) {
+    $unpacked = Join-Path $ProjectRoot ('.tools/portable-smoke/' + [Guid]::NewGuid().ToString('N'))
+    Expand-Archive -LiteralPath (Join-Path $ProjectRoot "release/LanTodo-v$($properties.Project.PropertyGroup.InformationalVersion)-Windows.zip") -DestinationPath $unpacked
+    $top=Get-ChildItem -LiteralPath $unpacked
+    if($top.Count -ne 1 -or -not $top[0].PSIsContainer){throw 'Windows ZIP 必须只有一个顶层文件夹。'}
+    $Executable = Join-Path $top[0].FullName 'LanTodo.exe'
+}
+$appExe = (Resolve-Path -LiteralPath $(if ([IO.Path]::IsPathRooted($Executable)) { $Executable } else { Join-Path $ProjectRoot $Executable })).Path
 $testProfile = Join-Path $ProjectRoot ('.tools/test-results/windows-' + [Guid]::NewGuid().ToString('N'))
 $arguments = @('--data-dir', ('"' + $testProfile + '"'))
 $first = Start-Process -FilePath $appExe -ArgumentList $arguments -WindowStyle Hidden -PassThru

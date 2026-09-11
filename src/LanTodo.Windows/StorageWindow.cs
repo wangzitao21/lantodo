@@ -18,22 +18,22 @@ public sealed class StorageWindow : Window
         Title = "备份与恢复"; Width = 620; Height = 640; WindowStartupLocation = WindowStartupLocation.CenterOwner;
         var panel = new StackPanel { Margin = new Thickness(28) };
         Content = new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-        panel.Children.Add(new TextBlock { Text = "数据存储位置", FontSize = 23, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0,0,0,14) });
-        var location = new TextBox { Text = app.Store.Database.FilePath, IsReadOnly = true, TextWrapping = TextWrapping.Wrap, Background = Brushes.White }; panel.Children.Add(location);
+        panel.Children.Add(SettingsTheme.Heading("备份与恢复"));
+        panel.Children.Add(SettingsTheme.Hint("所有清单、附件与历史的统一备份。"));
+        var section=new StackPanel();panel.Children.Add(SettingsTheme.Card(section));
+        section.Children.Add(new TextBlock {Text="数据存储位置",FontSize=18,FontWeight=FontWeights.SemiBold,Margin=new Thickness(0,0,0,12)});
+        var location = new TextBox { Text = app.Store.Database.FilePath, IsReadOnly = true, TextWrapping = TextWrapping.Wrap, Background = Brushes.White }; section.Children.Add(location);
         IsVisibleChanged += (_, _) => location.Text = app.Store.Database.FilePath;
         AddButton("打开数据文件夹", () => { Process.Start(new ProcessStartInfo(app.Store.Root) { UseShellExecute = true }); return Task.CompletedTask; });
-        AddButton("更改数据位置…", async () =>
+        AddButton("打开附件文件夹", () =>
         {
-            var chooser = new OpenFolderDialog { Title = "选择存放数据库的文件夹", Multiselect = false };
-            if (chooser.ShowDialog(this) != true) return;
-            if (ModernDialog.Show(this,$"将完整清单、历史和配对迁移到：\n{chooser.FolderName}\n\n校验成功后立即切换位置，并移除原数据库。目标不能已有LanTodo数据。","更改数据位置",MessageBoxButton.YesNo,MessageBoxImage.Question) != MessageBoxResult.Yes) return;
-            progress.Text = "正在校验和迁移，请稍候…";
-            await ((App)Application.Current).MigrateAsync(chooser.FolderName);
-            location.Text = app.Store.Database.FilePath; progress.Text = "数据库已移动，新位置立即生效。";
+            System.IO.Directory.CreateDirectory(app.Store.Attachments.DirectoryPath);
+            Process.Start(new ProcessStartInfo(app.Store.Attachments.DirectoryPath) { UseShellExecute = true }); return Task.CompletedTask;
         });
-        panel.Children.Add(new TextBlock { Text = "SQLite 数据库 · 清单、历史、设备身份和配对均保存在这一个文件中。默认与程序放在一起；更改位置后，程序旁只增加一个位置指引文件。", Foreground = Brushes.SlateGray, Margin = new Thickness(0,12,0,22) });
-        panel.Children.Add(new TextBlock { Text = "备份与恢复", FontSize = 21, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0,0,0,12) });
-        AddButton("导出清单与全部历史", async () =>
+        section.Children.Add(new TextBlock { Text = "所有附件统一放在 attachments 文件夹。清单、历史和附件不随网络空间切换；完整搬迁时请保存整个数据目录。", Foreground = Brushes.SlateGray, Margin = new Thickness(0,12,0,22) });
+        section=new StackPanel();panel.Children.Add(SettingsTheme.Card(section));
+        section.Children.Add(new TextBlock { Text = "备份与恢复", FontSize = 18, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0,0,0,12) });
+        AddButton("导出全部清单与历史", async () =>
         {
             var chooser = new SaveFileDialog { FileName = $"LanTodo-{DateTime.Now:yyyyMMdd-HHmmss}.lantodo.zip", Filter = "LanTodo 备份|*.zip" };
             if (chooser.ShowDialog(this) != true) return;
@@ -45,11 +45,11 @@ public sealed class StorageWindow : Window
             if (chooser.ShowDialog(this) != true || ModernDialog.Show(this,"将合并全部历史，可能产生待确认的冲突。继续？","合并恢复",MessageBoxButton.YesNo) != MessageBoxResult.Yes) return;
             progress.Text = "正在校验并恢复…"; int count = await Task.Run(() => app.Store.Restore(chooser.FileName)); progress.Text = $"已恢复 {count} 个版本。";
         });
-        panel.Children.Add(new TextBlock { Text = "导出为 ZIP，内含 JSON 格式的全部清单历史（含删除和冲突），便于跨设备合并恢复。它不是数据库镜像，不含设备身份、配对和设置。备份未加密，请保存到独立存储位置。", FontSize = 12, Foreground = Brushes.SlateGray, Margin = new Thickness(0,12,0,0) });
+        section.Children.Add(new TextBlock { Text = "ZIP 包含全部清单历史、回收站与可用附件，保留附件失效记录。未下载完成的附件需先同步。不含设备身份、空间成员和设置。备份未加密，请保存到独立存储位置。", FontSize = 12, Foreground = Brushes.SlateGray, Margin = new Thickness(0,12,0,0) });
         panel.Children.Add(progress);
         void AddButton(string label, Func<Task> action)
         {
-            var button = new Button { Content = label, HorizontalContentAlignment = HorizontalAlignment.Left }; panel.Children.Add(button);
+            var button = new Button { Content = label, HorizontalContentAlignment = HorizontalAlignment.Left }; section.Children.Add(button);
             button.Click += async (_, _) =>
             {
                 IsEnabled = false;

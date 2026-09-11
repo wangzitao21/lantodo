@@ -19,9 +19,9 @@ public sealed partial class PeerNode
             previous.TrySetResult();
         }
     }
-    private bool HasFixedPeers => Replicas?.Current is { NasEnabled: true, Endpoints.Length: > 0 };
+    private bool HasFixedPeers => identity.Space is null && Replicas?.Current is { NasEnabled: true, Endpoints.Length: > 0 };
     private bool IsFixedPeer(string id) => Replicas?.Current is { NasEnabled: true } c && c.Endpoints!.Any(e => e.DeviceId == id);
-    public ReplicaStatus[] ReplicaStatuses => (Replicas?.Current.Endpoints ?? []).Select(e =>
+    public ReplicaStatus[] ReplicaStatuses => identity.Space is not null ? SpaceStatuses : (Replicas?.Current.Endpoints ?? []).Select(e =>
     {
         if (!identity.IsTrusted(e.DeviceId)) return new ReplicaStatus(e.DeviceId, e.Address, "未授权，请重新配对");
         if (Replicas?.Current.NasEnabled != true) return new ReplicaStatus(e.DeviceId, e.Address, "NAS 同步已暂停");
@@ -34,6 +34,8 @@ public sealed partial class PeerNode
 
     public async Task PairAddressAsync(string address, string code, CancellationToken token = default)
     {
+        if (code.Trim().StartsWith("lantodo2:")) { await JoinSpaceAsync(code, address, token); return; }
+        if (identity.Space is not null) throw new InvalidDataException("这是旧版配对码，请生成空间授权码。");
         if (Replicas is null) throw new InvalidOperationException("未配置 NAS 设置存储。");
         var invite = DeviceIdentity.ParseInvite(code);
         if (invite.DeviceId == identity.Id) throw new InvalidDataException("不能与本机配对。");
@@ -78,8 +80,8 @@ public sealed partial class PeerNode
             while (!token.IsCancellationRequested)
             {
                 var config = Replicas?.Current;
-                var desired = (config?.NasEnabled == true ? config.Endpoints! : [])
-                    .Where(e => identity.IsTrusted(e.DeviceId)).ToHashSet();
+                var desired = (identity.Space is null && config?.NasEnabled == true ? config.Endpoints! : [])
+                    .Where(e => identity.IsTrusted(e.DeviceId) || identity.RevokedDevices.Any(d => d.Id == e.DeviceId)).ToHashSet();
                 foreach (var obsolete in workers.Keys.Where(e => !desired.Contains(e)).ToArray())
                 {
                     var worker = workers[obsolete]; worker.Stop.Cancel();
@@ -136,6 +138,7 @@ public sealed partial class PeerNode
                             using var tls = await Connect(tcp, endpoint, peer.DeviceId, wait.Token);
                             await Wire.Write(tls, new("watch", Generation: remoteGeneration), wait.Token);
                             var reply = await Wire.Read(tls, wait.Token);
+                            ReadPeerState(reply, peer.DeviceId);
                             if (!identity.IsTrusted(peer.DeviceId)) throw new UnauthorizedAccessException("节点授权已取消。");
                             if (reply.Kind != "changed" || reply.Generation is null || reply.Generation.Length > 64)
                                 throw new InvalidDataException("节点变化通知无效。");

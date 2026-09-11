@@ -32,8 +32,9 @@ internal static class DataLocation
         var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         var config = Path.Combine(local, "LanTodo-location.json");
         var path = File.Exists(config) ? JsonSerializer.Deserialize<string>(File.ReadAllText(config)) : Path.Combine(local, "LanTodo");
-        if (File.Exists(config) && (string.IsNullOrWhiteSpace(path) || !LegacyProfile.Exists(path)))
+        static bool Exists(string path) => LegacyProfile.Exists(path) || File.Exists(Path.Combine(path, SqliteProfile.FileName));
+        if (File.Exists(config) && (string.IsNullOrWhiteSpace(path) || !Exists(path)))
             throw new IOException("旧版自定义数据目录不可用，请连接原磁盘后重试：" + path);
-        return path is not null && LegacyProfile.Exists(path) ? path : null;
+        return path is not null && Exists(path) ? path : null;
     }
 }

@@ -12,23 +12,76 @@ public sealed class TodoStore : ITodoStore, IDisposable
     private readonly List<Revision> ordered = new();
     public event Action? Changed;
     public string Root => Path.GetDirectoryName(Database.FilePath)!;
+    public AttachmentStore Attachments { get; }
+    public void DetectMissingAttachments() => Attachments.DetectMissing(ActiveAttachments());
+    public void NotifyAttachmentsChanged() { lock (gate) CleanDeletedAttachments(); Changed?.Invoke(); }
+    public void ReceiveAttachment(Attachment item, long offset, byte[] bytes)
+    {
+        lock (gate)
+        {
+            if (!ActiveAttachments().Contains(item)) throw new IOException("消息已删除或附件已移除。");
+            DetectMissingAttachments();
+            Attachments.Receive(item, offset, bytes);
+        }
+    }
 
     public TodoStore(string root)
     {
+        Attachments = new(() => Root);
         root = Path.GetFullPath(root);
         Directory.CreateDirectory(root);
         LegacyProfile.Upgrade(root);
         Database = new SqliteProfile(root);
-        try { foreach (var r in ValidateOrder(Database.ReadRevisions())) AddMemory(r); }
+        try { foreach (var r in ValidateOrder(Database.ReadRevisions())) AddMemory(r); CleanDeletedAttachments(); Attachments.MigrateOriginalNames(ActiveAttachments()); DetectMissingAttachments(); Attachments.Changed += AttachmentStateChanged; }
         catch { Database.Dispose(); throw; }
     }
 
+    private void AttachmentStateChanged() => Changed?.Invoke();
+    internal bool SpaceDeleted => Database.ReadMetadata("space-deleted") is {Length:>0} value && value[0]==1;
+    internal void ClearLocalContent()
+    {
+        lock(gate)
+        {
+            Attachments.ClearLocalFiles();
+            ((SqliteProfile)Database).ClearRevisions();
+            revisions.Clear();heads.Clear();ordered.Clear();
+            Database.WriteMetadata("space-cleared",[1]);
+        }
+    }
+    internal void ForgetMergedContent()
+    {
+        lock(gate)
+        {
+            // Delete only tracked originals; unrelated files in an old folder are never swept up.
+            foreach(var hash in ordered.SelectMany(r=>r.Body.Data.Attachments??[]).Select(a=>a.Hash).Distinct())Attachments.Delete(hash);
+            ((SqliteProfile)Database).ClearRevisions();revisions.Clear();heads.Clear();ordered.Clear();
+        }
+    }
+    public TodoView[] Trash() { lock(gate) return AllViews().Where(v => !v.Conflict && v.Data.Deleted && !v.Data.Purged).ToArray(); }
+    private IEnumerable<TodoView> AllViews() => heads.Select(p => new TodoView(p.Key,p.Value.OrderBy(id=>id,StringComparer.Ordinal).Select(id=>revisions[id]).ToArray()));
+    public void Purge(string actor, string name, TodoView view)
+    {
+        if(view.Conflict || !view.Data.Deleted || view.Data.Purged) throw new InvalidOperationException("只能彻底清除回收站中的记录。");
+        Save(actor,name,view.Data with { Purged=true, Attachments=null },view.Id,view.VersionIds);
+    }
     public TodoView[] List()
     {
         lock (gate) return heads.Select(p => new TodoView(p.Key, p.Value.OrderBy(id => id, StringComparer.Ordinal).Select(id => revisions[id]).ToArray()))
             .Where(v => v.Conflict || !v.Data.Deleted).OrderBy(v => v.Data.Date ?? "9999").ThenBy(v => v.Data.Time ?? "99").ThenBy(v => v.Id).ToArray();
     }
     public Revision[] Export() { lock (gate) return ordered.ToArray(); }
+    public Attachment[] ActiveAttachments() { lock (gate) return heads.Values.SelectMany(h => h).Select(id => revisions[id]).Where(r => !r.Body.Data.Purged).SelectMany(r => r.Body.Data.Attachments ?? []).Distinct().ToArray(); }
+    private static Attachment[] SnapshotAttachments(IEnumerable<Revision> snapshot)
+    {
+        var all = snapshot.ToArray();
+        var parents = all.SelectMany(r => r.Body.Parents).ToHashSet();
+        return all.Where(r => !parents.Contains(r.Id) && !r.Body.Data.Purged).SelectMany(r => r.Body.Data.Attachments ?? []).DistinctBy(a => a.Hash).ToArray();
+    }
+    private void CleanDeletedAttachments()
+    {
+        var active = ActiveAttachments().Select(a => a.Hash).ToHashSet();
+        foreach (var hash in ordered.SelectMany(r => r.Body.Data.Attachments ?? []).Select(a => a.Hash).Distinct().Where(h => !active.Contains(h))) Attachments.Delete(hash);
+    }
     public Revision[] History(string todoId) { lock (gate) return ordered.Where(r => r.Body.TodoId == todoId).ToArray(); }
 
     public Revision Save(string actor, string deviceName, TodoData data, string? todoId = null, string[]? expectedHeads = null)
@@ -37,11 +90,13 @@ public sealed class TodoStore : ITodoStore, IDisposable
         lock (gate)
         {
             todoId ??= Guid.NewGuid().ToString("N");
+            if(SpaceDeleted)throw new InvalidOperationException("这个空间已从本机删除。");
             var actual = heads.TryGetValue(todoId, out var h) ? h.OrderBy(id => id, StringComparer.Ordinal).ToArray() : Array.Empty<string>();
             if (!actual.SequenceEqual((expectedHeads ?? Array.Empty<string>()).OrderBy(id => id, StringComparer.Ordinal))) throw new StaleEditException();
             r = Revision.Create(new RevisionBody(1, todoId, actor, deviceName, Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow.ToString("O"), actual, data));
             r.Validate();
             Persist(r);
+            CleanDeletedAttachments();
         }
         Changed?.Invoke();
         return r;
@@ -53,9 +108,11 @@ public sealed class TodoStore : ITodoStore, IDisposable
         lock (gate)
         {
             var sorted = ValidateOrder(incoming.ToArray());
+            if(SpaceDeleted)throw new InvalidOperationException("这个空间已从本机删除。");
             count = sorted.Count;
             Database.Append(sorted);
             foreach (var r in sorted) AddMemory(r);
+            CleanDeletedAttachments();
         }
         if (count > 0) Changed?.Invoke();
         return count;
@@ -78,6 +135,7 @@ public sealed class TodoStore : ITodoStore, IDisposable
             }
             Database.Append(pending);
             foreach (var revision in pending) AddMemory(revision);
+            CleanDeletedAttachments();
         }
         if (pending.Count > 0) Changed?.Invoke();
         return (pending.Count, skipped);
@@ -137,6 +195,11 @@ public sealed class TodoStore : ITodoStore, IDisposable
 
     public void Backup(string path)
     {
+        lock (gate) BackupSnapshot(path);
+    }
+    private void BackupSnapshot(string path)
+    {
+        DetectMissingAttachments();
         var snapshot = Export();
         var temp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
@@ -150,8 +213,14 @@ public sealed class TodoStore : ITodoStore, IDisposable
                         using var entry = zip.CreateEntry("revisions/" + r.Id + ".json").Open();
                         JsonSerializer.Serialize(entry, r, Json.Options);
                     }
+                    foreach (var attachment in SnapshotAttachments(snapshot))
+                    {
+                        if (Attachments.IsInvalid(attachment)) continue;
+                        if (!Attachments.Has(attachment)) throw new IOException("附件尚未同步完成，暂不能生成完整备份。");
+                        zip.CreateEntryFromFile(Attachments.PathFor(attachment.Hash), "attachments/" + attachment.Hash, CompressionLevel.NoCompression);
+                    }
                     using var manifest = zip.CreateEntry("manifest.json").Open();
-                    JsonSerializer.Serialize(manifest, new { schema = 1, count = snapshot.Length, ids = snapshot.Select(r => r.Id).ToArray() }, Json.Options);
+                    JsonSerializer.Serialize(manifest, new { schema = 1, invalidAttachments = Attachments.InvalidKeys, count = snapshot.Length, ids = snapshot.Select(r => r.Id).ToArray() }, Json.Options);
                 }
                 file.Flush(true);
             }
@@ -161,6 +230,10 @@ public sealed class TodoStore : ITodoStore, IDisposable
     }
 
     public int Restore(string path)
+    {
+        lock (gate) return RestoreSnapshot(path);
+    }
+    private int RestoreSnapshot(string path)
     {
         using var zip = ZipFile.OpenRead(path);
         var entry = zip.GetEntry("manifest.json") ?? throw new InvalidDataException("备份缺失清单。");
@@ -175,13 +248,25 @@ public sealed class TodoStore : ITodoStore, IDisposable
         {
             if (!Json.IsHash(id)) throw new InvalidDataException("备份版本号无效。");
             var item = zip.GetEntry("revisions/" + id + ".json") ?? throw new InvalidDataException("备份缺失版本：" + id);
-            if (item.Length > 256 * 1024) throw new InvalidDataException("备份记录过大。");
+            if (item.Length > Json.MaxRevisionBytes) throw new InvalidDataException("备份记录过大。");
             using var input = item.Open();
             var r = JsonSerializer.Deserialize<Revision>(input, Json.Options) ?? throw new InvalidDataException();
             if (r.Id != id) throw new InvalidDataException("备份记录与清单不符。");
             restored.Add(r);
         }
+        lock (gate) ValidateOrder(restored.ToArray());
+        if (manifest.RootElement.TryGetProperty("invalidAttachments", out var invalidKeys)) Attachments.Invalidate(invalidKeys.EnumerateArray().Select(e=>e.GetString()!));
+        foreach (var attachment in SnapshotAttachments(Export().Concat(restored).DistinctBy(r => r.Id)))
+        {
+            attachment.Validate();
+            if (Attachments.IsInvalid(attachment) || Attachments.Has(attachment)) continue;
+            var blob = zip.GetEntry("attachments/" + attachment.Hash) ?? throw new InvalidDataException("备份缺失附件。");
+            if (blob.Length != attachment.Size) throw new InvalidDataException("备份附件大小不符。");
+            using var input = blob.Open();
+            var added = Attachments.Add(input, attachment.Name, attachment.Kind);
+            if (added.Hash != attachment.Hash) throw new InvalidDataException("备份附件校验失败。");
+        }
         return Import(restored);
     }
-    public void Dispose() => Database.Dispose();
+    public void Dispose() { Attachments.Changed -= AttachmentStateChanged; Database.Dispose(); }
 }

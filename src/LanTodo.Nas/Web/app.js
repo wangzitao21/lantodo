@@ -60,7 +60,7 @@ setInterval(() => { if (connected && !document.hidden) refresh().catch(e => mess
 
 async function initialize() {
   const auth = await api('auth'); authConfigured = auth.configured;
-  $('securityHint').textContent = auth.managedByEnvironment ? '令牌由容器环境变量管理。' : auth.configured ? '已设置令牌。此浏览器会保持登录，更换令牌将使其他会话退出。' : '首次使用可直接进入。请在这里设置管理令牌，保护控制台。';
+  $('securityHint').textContent = auth.managedByEnvironment ? '令牌由容器环境变量管理。' : auth.configured ? '已设置令牌。此浏览器会保持登录，更换令牌将使其他会话退出。' : '请使用 NAS 数据目录中的 admin-token 登录。';
   $('securityForm').hidden = auth.managedByEnvironment;
   if (auth.authenticated) { await refresh(); $('logout').hidden = !auth.configured; } else showLogin();
 }

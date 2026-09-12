@@ -6,7 +6,8 @@ namespace LanTodo.Core;
 public sealed record Packet(string Kind, string? Name = null, string? Secret = null, string[]? Ids = null,
     Revision[]? Revisions = null, int Offset = 0, bool Done = false, string? Error = null, int Protocol = 1, string? Generation = null,
     bool Blobs = false, Attachment? Attachment = null, long Position = 0, byte[]? Bytes = null, DeviceLabel[]? Labels = null,
-    SpaceSnapshot? Space = null, RouteHint[]? Routes = null, int Port = 0, string? SpaceRoot = null);
+    SpaceSnapshot? Space = null, RouteHint[]? Routes = null, int Port = 0, string? SpaceRoot = null,
+    bool KeepAlive = false);
 
 public static class Wire
 {

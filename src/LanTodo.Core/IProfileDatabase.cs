@@ -6,6 +6,7 @@ public interface IProfileDatabase : IDisposable
     string FilePath { get; }
     Revision[] ReadRevisions();
     void Append(IReadOnlyList<Revision> revisions);
+    void AppendWithMetadata(IReadOnlyList<Revision> revisions, string key, byte[] value);
     byte[]? ReadMetadata(string key);
     void WriteMetadata(string key, byte[] value);
 }

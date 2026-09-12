@@ -11,7 +11,12 @@ public partial class MainActivity
 {
     private void Editor(TodoView? todo)
     {
-        var attachments=todo?.Data.Attachments;
+        var draftKey="edit:"+(todo?.Id??"new");
+        var draft=app.Store.Drafts.Get(draftKey);
+        var expected=draft?.Heads??todo?.VersionIds??[];
+        bool detached=draft is not null && !expected.Order().SequenceEqual((todo?.VersionIds??[]).Order());
+        var originalData=draft?.Data??todo?.Data??new TodoData("");
+        var attachments=originalData.Attachments;
         Screen(todo?.Conflict == true ? "处理冲突" : todo is null ? "新建待办" : "编辑待办");BeginCard();
         LinearLayout? versions = null;
         if (todo?.Conflict == true)
@@ -19,12 +24,25 @@ public partial class MainActivity
             body.AddView(Text("每个版本都已保留。选一个作为基础，或编辑出最终内容，再确认保存。"));
             versions = new LinearLayout(this) { Orientation = Orientation.Vertical }; body.AddView(versions);
         }
-        var title = Input("标题", todo?.Data.Title ?? "");
-        var notes = Input("备注", todo?.Data.Notes ?? "", true);
-        var date = Input("截止日期 yyyy-MM-dd（可留空）", todo?.Data.Date ?? "");
-        var time = Input("截止时间 HH:mm（可留空）", todo?.Data.Time ?? "");
-        var completed = new CheckBox(this) { Text = "已完成", Checked = todo?.Data.Completed == true }; body.AddView(completed);
-        var deleted = new CheckBox(this) { Text = "删除这条待办（保留历史）", Checked = todo?.Data.Deleted == true };
+        var title = Input("标题", originalData.Title);
+        var notes = Input("备注", originalData.Notes, true);
+        var date = Input("选择截止日期（可留空）", originalData.Date ?? "");
+        var time = Input("选择截止时间（可留空）", originalData.Time ?? "");
+        date.Focusable=false;date.Clickable=true;time.Focusable=false;time.Clickable=true;
+        date.Click+=(_,_)=>
+        {
+            var current=DateTime.TryParse(date.Text,out var parsed)?parsed:DateTime.Today;
+            var picker=new DatePickerDialog(this,(_,args)=>date.Text=args.Date.ToString("yyyy-MM-dd"),current.Year,current.Month-1,current.Day);
+            picker.SetButton(-3,"不设日期",(_,_)=>{date.Text="";time.Text="";});picker.Show();
+        };
+        time.Click+=(_,_)=>
+        {
+            var current=TimeOnly.TryParse(time.Text,out var parsed)?parsed:TimeOnly.FromDateTime(DateTime.Now);
+            var picker=new TimePickerDialog(this,(_,args)=>{if(string.IsNullOrEmpty(date.Text))date.Text=DateTime.Today.ToString("yyyy-MM-dd");time.Text=$"{args.HourOfDay:00}:{args.Minute:00}";},current.Hour,current.Minute,true);
+            picker.SetButton(-3,"不设时间",(_,_)=>time.Text="");picker.Show();
+        };
+        var completed = new CheckBox(this) { Text = "已完成", Checked = originalData.Completed }; body.AddView(completed);
+        var deleted = new CheckBox(this) { Text = "删除这条待办（保留历史）", Checked = originalData.Deleted };
         if (todo is not null) body.AddView(deleted);
         if (versions is not null)
             foreach (var head in todo!.Heads)
@@ -32,13 +50,22 @@ public partial class MainActivity
                 var data = head.Body.Data;
                 var versionText = Text($"{app.DisplayName(head.Body.Actor,head.Body.DeviceName)} · {head.Body.CreatedUtc}\n{(data.Deleted ? "[已删除] " : "")}{data.Title}\n{data.Date} {data.Time} · {(data.Completed ? "已完成" : "未完成")}\n{data.Notes}");
                 versionText.SetTextIsSelectable(true); versions.AddView(versionText);
-                versions.AddView(Button("以此版本为基础", () => { attachments=data.Attachments; title.Text = data.Title; notes.Text = data.Notes; date.Text = data.Date; time.Text = data.Time; completed.Checked = data.Completed; deleted.Checked = data.Deleted; }));
+                versions.AddView(Button("以此版本为基础", () => { originalData=data; attachments=data.Attachments; title.Text = data.Title; notes.Text = data.Notes; date.Text = data.Date; time.Text = data.Time; completed.Checked = data.Completed; deleted.Checked = data.Deleted; }));
             }
+        if(draft is not null)body.AddView(Text(detached?"已恢复草稿。原记录已有修改，本次将另存为新想法。":"已恢复上次未完成的本机草稿。",13));
+        bool committed=false,dirty=false;
+        static string? Empty(string? s)=>string.IsNullOrWhiteSpace(s)?null:s.Trim();
+        TodoData ReadData()=>new(title.Text?.Trim()??"",notes.Text??"",Empty(date.Text),Empty(time.Text),completed.Checked,deleted.Checked,attachments,Starred:originalData.Starred,Color:originalData.Color);
+        editorDraftSave=background=>{if(dirty&&!committed)PersistDraft(draftKey,new(ReadData(),expected),background);};
+        void DraftChanged(){dirty=true;ScheduleEditorDraft();}
+        title.TextChanged+=(_,_)=>DraftChanged();notes.TextChanged+=(_,_)=>DraftChanged();date.TextChanged+=(_,_)=>DraftChanged();time.TextChanged+=(_,_)=>DraftChanged();
+        completed.CheckedChange+=(_,_)=>DraftChanged();deleted.CheckedChange+=(_,_)=>DraftChanged();
         body.AddView(Button(todo?.Conflict == true ? "确认最终版本并保存" : "保存到本机", () =>
         {
-            static string? Empty(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
-            app.Store.Save(app.Identity.Id,app.Identity.Name,new TodoData(title.Text?.Trim() ?? "", notes.Text ?? "",Empty(date.Text),Empty(time.Text),completed.Checked,deleted.Checked,attachments),todo?.Id,todo?.VersionIds);
-            Home();
+            app.LocalWrites.DrainAsync().GetAwaiter().GetResult();
+            app.Store.Save(app.Identity.Id,app.Identity.Name,ReadData(),detached?null:todo?.Id,detached?null:expected,draftKey);
+            committed=true;
+            GoBack();
         }));
         if (todo is not null) body.AddView(Button("查看完整修改历史", () => Navigate(() =>
         {

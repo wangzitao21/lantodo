@@ -13,7 +13,7 @@ public partial class MainActivity
         foreach (var state in app.Node.SpaceStatuses)
         {
             var name = app.Identity.Devices.FirstOrDefault(d => d.Id == state.DeviceId)?.Name ?? "设备";
-            body.AddView(Text(name + " · " + state.State + (state.Address.Length > 0 ? "\n" + state.Address : "") + (state.Error is null ? "" : "\n" + state.Error), 12));
+            body.AddView(Text(name + " · " + app.Node.DeviceState(state.DeviceId) + (state.Address.Length > 0 ? "\n" + state.Address : "") + (state.Error is null ? "" : "\n" + state.Error), 12));
             var fallback = Input("备用地址（可选）", app.Replicas.Current.Endpoints?.FirstOrDefault(e => e.DeviceId == state.DeviceId)?.Address ?? "");
             body.AddView(Button("保存备用地址（留空移除）", () => { try { if (string.IsNullOrWhiteSpace(fallback.Text)) app.Replicas.RemoveEndpoint(state.DeviceId); else app.Replicas.SetEndpoint(state.DeviceId, fallback.Text); Toast.MakeText(this,"已保存",ToastLength.Short)?.Show(); } catch (Exception ex) { Error(ex.Message); } }));
         }

@@ -75,8 +75,12 @@ public sealed class SqliteProfile : IProfileDatabase
         }
     }
     public void Append(IReadOnlyList<Revision> revisions)
+        => AppendCore(revisions, null, null);
+    public void AppendWithMetadata(IReadOnlyList<Revision> revisions, string key, byte[] value)
+        => AppendCore(revisions, key, value);
+    private void AppendCore(IReadOnlyList<Revision> revisions, string? key, byte[]? value)
     {
-        if (revisions.Count == 0) return;
+        if (revisions.Count == 0 && key is null) return;
         lock (gate)
         {
             using var tx = connection.BeginTransaction();
@@ -86,6 +90,13 @@ public sealed class SqliteProfile : IProfileDatabase
                 cmd.CommandText = "INSERT INTO revisions(id,todo_id,payload) VALUES($id,$todo,$payload)";
                 cmd.Parameters.AddWithValue("$id", r.Id); cmd.Parameters.AddWithValue("$todo", r.Body.TodoId);
                 cmd.Parameters.AddWithValue("$payload", JsonSerializer.SerializeToUtf8Bytes(r, Json.Options)); cmd.ExecuteNonQuery();
+            }
+            if (key is not null)
+            {
+                using var metadata = connection.CreateCommand(); metadata.Transaction = tx;
+                metadata.CommandText = "INSERT INTO metadata(key,value) VALUES($key,$value) ON CONFLICT(key) DO UPDATE SET value=excluded.value";
+                metadata.Parameters.AddWithValue("$key", key); metadata.Parameters.AddWithValue("$value", value!);
+                metadata.ExecuteNonQuery();
             }
             tx.Commit();
         }

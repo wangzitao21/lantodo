@@ -18,6 +18,10 @@ public partial class MainActivity
         new AlertDialog.Builder(this).SetTitle(create?"新建连接空间":"空间名称")!.SetView(container)!.SetNegativeButton("取消",(_,_)=>{})!
             .SetPositiveButton("保存",async(_,_)=>{try{if(create)await app.CreateSpaceAsync(input.Text??"");else app.RenameSpace(input.Text??"");Devices();}catch(Exception ex){Error(ex.Message);}})!.Show();
     }
+    private void RefreshDevices()
+    {
+        var offset=pageScroll.ScrollY;Devices();var scroll=pageScroll;scroll.Post(()=>scroll.ScrollTo(0,offset));
+    }
     private void Devices()
     {
         Screen("设备与同步"); showingDevices=true;spaceStatusLabels.Clear();
@@ -52,6 +56,7 @@ public partial class MainActivity
             for(int i=0;i<actions.ChildCount;i++){var layout=new LinearLayout.LayoutParams(0,-2,1);layout.SetMargins(i==0?0:Dp(4),Dp(4),i==0?Dp(4):0,Dp(4));actions.GetChildAt(i)!.LayoutParameters=layout;}
         if(space is null)overview.AddView(Button("升级原有连接",()=>Confirm("升级连接规则","旧设备需要使用新授权码加入，原数据保留。","升级",()=>{app.Identity.EnsureSpace(true);Devices();})));
         var members=Card();members.AddView(Text("空间成员",18,true));members.AddView(Text(app.Identity.Name+" · 本机",15,true));
+        var selfState=Text("",12);members.AddView(selfState);spaceStatusLabels[app.Identity.Id]=selfState;
         foreach(var device in app.Identity.Devices)
         {
             var row=new LinearLayout(this){Orientation=Orientation.Horizontal};row.SetGravity(GravityFlags.CenterVertical);
@@ -67,6 +72,7 @@ public partial class MainActivity
         connection.AddView(Button("立即同步所有空间",()=>{app.RequestSync();Toast.MakeText(this,"正在连接在线成员",ToastLength.Short)?.Show();}));
         connection.AddView(Button("高级连接设置  ›",()=>Navigate(NasSettings)));
         if(active)connection.AddView(Button("退出此空间",()=>Confirm("退出空间","停止此空间的同步，保留本机内容；其他空间不受影响。","退出",()=>{app.Identity.LeaveSpace();Devices();})));
+        StatusChanged();
         body.AddView(Text("后台同步受系统电池策略限制。打开应用后会自动补齐。",12));
     }
     private void SpaceInvitePage()

@@ -136,7 +136,12 @@ public sealed class DevicesWindow : Window
         panel.Children.Add(message);
         void RefreshStatus()
         {
-            foreach (var (id, label) in statusLabels) label.Text = app.Node.DeviceState(id);
+            foreach (var (id, label) in statusLabels)
+            {
+                var online=id==app.Identity.Id?app.IsOnline:app.Node.IsDeviceOnline(id);
+                label.Text="●  "+(online?"在线":"当前不在线");label.Foreground=online?Brushes.SeaGreen:Brushes.IndianRed;
+                label.Effect=online?new System.Windows.Media.Effects.DropShadowEffect{Color=Colors.MediumSeaGreen,BlurRadius=6,ShadowDepth=0,Opacity=0.3}:null;
+            }
             if (expires is { } end)
             {
                 var seconds = (int)(end - DateTimeOffset.UtcNow).TotalSeconds;
@@ -158,6 +163,7 @@ public sealed class DevicesWindow : Window
             members.Children.Clear(); statusLabels.Clear();
             var memberHeading=new DockPanel();DockPanel.SetDock(sync,Dock.Right);memberHeading.Children.Add(sync);memberHeading.Children.Add(Text("空间成员",18));members.Children.Add(memberHeading);
             members.Children.Add(Text(app.Identity.Name+" · 本机",14));
+            var selfStatus=Text("",12);members.Children.Add(selfStatus);statusLabels[app.Identity.Id]=selfStatus;
             foreach (var device in app.Identity.Devices)
             {
                 var row = new DockPanel(); var remove = new Button { Content = "移除", VerticalAlignment = VerticalAlignment.Center };

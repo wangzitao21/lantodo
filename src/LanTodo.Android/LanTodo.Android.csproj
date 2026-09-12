@@ -2,7 +2,7 @@
   <PropertyGroup>
     <TargetFramework>net10.0-android</TargetFramework><OutputType>Exe</OutputType>
     <SupportedOSPlatformVersion>26</SupportedOSPlatformVersion>
-    <ApplicationId>app.lantodo.local</ApplicationId><ApplicationVersion>15</ApplicationVersion><ApplicationDisplayVersion>$(InformationalVersion)</ApplicationDisplayVersion>
+    <ApplicationId>app.lantodo.local</ApplicationId><ApplicationVersion>19</ApplicationVersion><ApplicationDisplayVersion>$(InformationalVersion)</ApplicationDisplayVersion>
     <!-- Android requires an increasing integer build code to upgrade existing installations. -->
     <ApplicationTitle>LanTodo</ApplicationTitle><AndroidPackageFormats>apk</AndroidPackageFormats>
     <RuntimeIdentifiers>android-arm64;android-x64</RuntimeIdentifiers>
@@ -11,5 +11,20 @@
     <!-- The .NET 10 native marshal registration path produced an unbound MainActivity.n_onCreate in the published APK. -->
     <AndroidEnableMarshalMethods>false</AndroidEnableMarshalMethods>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <PublishTrimmed>true</PublishTrimmed>
+    <TrimMode>partial</TrimMode>
+    <UseCurrentRuntimeIdentifier>false</UseCurrentRuntimeIdentifier>
+    <UseDefaultPublishRuntimeIdentifier>false</UseDefaultPublishRuntimeIdentifier>
+    <JsonSerializerIsReflectionEnabledByDefault>true</JsonSerializerIsReflectionEnabledByDefault>
+    <RunAOTCompilation>true</RunAOTCompilation>
+    <AndroidEnableProfiledAot>true</AndroidEnableProfiledAot>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Persisted/wire JSON uses reflection over these records, including private
+         routing/catalog types. Keep their shape and Android callback entry points. -->
+    <TrimmerRootAssembly Include="LanTodo.Core" RootMode="All" />
+    <TrimmerRootAssembly Include="LanTodo.Android" RootMode="All" />
+  </ItemGroup>
   <ItemGroup><ProjectReference Include="../LanTodo.Core/LanTodo.Core.csproj" /></ItemGroup>
 </Project>

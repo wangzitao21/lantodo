@@ -18,6 +18,13 @@ internal static class AdminWeb
         var tokenPath = Path.Combine(dataPath, "admin-token");
         var configured = Environment.GetEnvironmentVariable("LANTODO_ADMIN_TOKEN");
         string? password = !string.IsNullOrWhiteSpace(configured) ? configured : File.Exists(tokenPath) ? File.ReadAllText(tokenPath).Trim() : null;
+        if (password is null)
+        {
+            password = Convert.ToHexString(RandomNumberGenerator.GetBytes(24)).ToLowerInvariant();
+            AtomicFile.Write(tokenPath, Encoding.UTF8.GetBytes(password));
+            if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(tokenPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            Console.WriteLine($"已生成管理令牌。首次登录请在 NAS 本机读取 {tokenPath}；也可设置 LANTODO_ADMIN_TOKEN。");
+        }
         if (password is not null && password.Length < 24) throw new ArgumentException("管理令牌至少需要 24 个字符。");
         string? expected = password is null ? null : Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes("Bearer " + password)));
         var securityGate = new SemaphoreSlim(1, 1);
@@ -31,7 +38,7 @@ internal static class AdminWeb
             options.Cookie.Name = "LanTodo.Admin";
             options.Cookie.HttpOnly = true;
             options.Cookie.SameSite = SameSiteMode.Strict;
-            options.ExpireTimeSpan = TimeSpan.FromDays(180);
+            options.ExpireTimeSpan = TimeSpan.FromDays(14);
             options.SlidingExpiration = true;
         });
         var web = builder.Build();
@@ -39,7 +46,7 @@ internal static class AdminWeb
         bool Authorized(HttpContext context)
         {
             var current = expected;
-            if (current is null) return true;
+            if (current is null) return false;
             if (context.User.FindFirstValue("credential") == current) return true;
             var supplied = SHA256.HashData(Encoding.UTF8.GetBytes(context.Request.Headers.Authorization.ToString()));
             return CryptographicOperations.FixedTimeEquals(Convert.FromHexString(current), supplied);
@@ -84,7 +91,7 @@ internal static class AdminWeb
             await securityGate.WaitAsync(context.RequestAborted);
             try
             {
-                // Recheck after acquiring the setup lock: only the first anonymous setup wins.
+                // Recheck after acquiring the lock: a rotated credential must not remain valid.
                 if (!Authorized(context)) return Results.Unauthorized();
                 if (!string.IsNullOrWhiteSpace(configured)) return Results.BadRequest(new { error = "令牌由容器环境变量管理，请修改环境变量。" });
                 var request = await JsonSerializer.DeserializeAsync<Packet>(context.Request.Body, Json.Options, context.RequestAborted);
@@ -112,7 +119,7 @@ internal static class AdminWeb
             catch (Exception ex) when (ex is not OutOfMemoryException) { return Results.BadRequest(new { error = ex.Message }); }
         });
         await web.StartAsync(token);
-        Console.WriteLine($"Management web listening on HTTP {port}. First-time setup is available in the console; configured sessions are remembered.");
+        Console.WriteLine($"Management web listening on HTTP {port}. Authentication is required; configured sessions are remembered.");
         return web;
     }
 }

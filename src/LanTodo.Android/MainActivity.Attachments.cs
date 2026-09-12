@@ -93,8 +93,9 @@ public partial class MainActivity
         catch(Exception ex){if(!IsDestroyed)Error(ex.Message);}
         finally{attachmentBusy=false;if(!IsDestroyed)RenderPendingAttachments();}
     }
-    private void RenderPendingAttachments()
+    private void RenderPendingAttachments(bool saveDraft = true)
     {
+        if (saveDraft) SaveComposeDraft();
         if(pendingScroll is not null)pendingScroll.Visibility=pendingAttachments.Count==0?ViewStates.Gone:ViewStates.Visible;
         pendingPanel?.RemoveAllViews();
         if(pendingPanel is not null)
@@ -110,6 +111,11 @@ public partial class MainActivity
     private void AddAttachmentView(LinearLayout container,Attachment item,Action actions)
     {
         var available=app.Store.Attachments.Has(item);
+        if(item.IsAudio)
+        {
+            var play=Button(available?"▶ 播放语音":"语音 · "+app.Store.Attachments.Availability(item));play.Enabled=available;
+            play.Click+=(_,_)=>PlayAudio(item,play);play.LongClick+=(_,args)=>{args.Handled=true;actions();};container.AddView(play);
+        }
         if(available && item.Kind=="image")
         {
             var image=new ImageView(this);image.SetScaleType(ImageView.ScaleType.FitCenter);image.ContentDescription=item.Name;
@@ -168,8 +174,8 @@ public partial class MainActivity
     }
     private void DeleteTodo(TodoView todo)
     {
-        try{app.Store.Save(app.Identity.Id,app.Identity.Name,todo.Data with{Deleted=true},todo.Id,todo.VersionIds);}
-        catch(Exception ex){Error(ex.Message);}
+        SaveTodo(todo,todo.Data with{Deleted=true},deleted =>
+            ShowUndo(()=>SaveTodo(new TodoView(todo.Id,[deleted]),todo.Data)));
     }
     private void MessageActions(TodoView todo)
     {
@@ -177,25 +183,38 @@ public partial class MainActivity
         {
             new AlertDialog.Builder(this).SetTitle(todo.Data.Title)!.SetItems(new[]{"恢复","彻底清除"},(_,args)=>
             {
-                try { if(args.Which==0)app.Store.Save(app.Identity.Id,app.Identity.Name,todo.Data with{Deleted=false},todo.Id,todo.VersionIds);
-                else Confirm("彻底清除","此操作会同步到所有已连接设备。","清除",()=>app.Store.Purge(app.Identity.Id,app.Identity.Name,todo)); }
+                try { if(args.Which==0)SaveTodo(todo,todo.Data with{Deleted=false});
+                else Confirm("彻底清除","此操作会同步到所有已连接设备。","清除",()=>PurgeTodo(todo)); }
                 catch(Exception ex){Error(ex.Message);}
             })!.Show(); return;
         }
-        new AlertDialog.Builder(this).SetTitle(todo.Data.Title)!.SetItems(new[]{"查看 / 编辑",todo.Data.Completed?"标为未完成":"完成","复制文字","删除"},(_,args)=>
+        new AlertDialog.Builder(this).SetTitle(todo.Data.Title)!.SetItems(new[]{"查看 / 编辑",todo.Data.Completed?"标为未完成":"完成","复制文字","移到回收站","彻底删除",todo.Data.Starred?"取消置顶":"星标置顶","背景色"},(_,args)=>
         {
             try
             {
                 switch(args.Which)
                 {
                     case 0:Navigate(()=>Editor(todo));break;
-                    case 1:app.Store.Save(app.Identity.Id,app.Identity.Name,todo.Data with{Completed=!todo.Data.Completed},todo.Id,todo.VersionIds);break;
+                    case 1:SaveTodo(todo,todo.Data with{Completed=!todo.Data.Completed});break;
                     case 2:((ClipboardManager)GetSystemService(ClipboardService)!).PrimaryClip=ClipData.NewPlainText("LanTodo",todo.Data.Title+(todo.Data.Notes.Length>0?"\n"+todo.Data.Notes:""));break;
                     case 3:DeleteTodo(todo);break;
+                    case 4:Confirm("彻底删除","不会移入回收站，此操作将同步到其他设备。","彻底删除",()=>PurgeTodo(todo));break;
+                    case 5:SaveTodo(todo,todo.Data with{Starred=!todo.Data.Starred});break;
+                    case 6:ChooseColor(todo);break;
                 }
             }
             catch(Exception ex){Error(ex.Message);}
         })!.Show();
+    }
+    private void ChooseColor(TodoView todo)
+    {
+        var colors=MessageStyle.Colors;
+        new AlertDialog.Builder(this).SetTitle("背景色")!.SetSingleChoiceItems(colors.Select(c=>c.Name).ToArray(),Array.FindIndex(colors,c=>c.Key==todo.Data.Color),(_,args)=>
+        {
+            try{SaveTodo(todo,todo.Data with{Color=colors[args.Which].Key});}
+            catch(Exception ex){Error(ex.Message);}
+            ((AlertDialog?)_)?.Dismiss();
+        })!.SetNegativeButton("关闭",(_,_)=>{})!.Show();
     }
     private sealed class SwipeMessage : FrameLayout
     {
@@ -205,6 +224,16 @@ public partial class MainActivity
         private readonly ImageButton trash;
         private float startX,startY,initial;
         private bool dragging,vertical;
+        private int bindingVersion;
+        public bool CanSwipe { get; set; } = true;
+        public void Reset()
+        {
+            bindingVersion++;
+            card.Animate()?.Cancel(); card.TranslationX=0;
+            dragging=vertical=false;initial=0;
+            Background!.Alpha=0;trash.Visibility=ViewStates.Invisible;
+            Parent?.RequestDisallowInterceptTouchEvent(false);
+        }
         public SwipeMessage(MainActivity owner,View card,Action delete):base(owner)
         {
             this.card=card;this.delete=delete;reveal=owner.Dp(76);slop=ViewConfiguration.Get(owner)!.ScaledTouchSlop;
@@ -216,7 +245,7 @@ public partial class MainActivity
         }
         public override bool OnInterceptTouchEvent(MotionEvent? e)
         {
-            if(e is null)return false;
+            if(e is null || !CanSwipe)return false;
             switch(e.ActionMasked)
             {
                 case MotionEventActions.Down:card.Animate()?.Cancel();startX=e.GetX();startY=e.GetY();initial=card.TranslationX;dragging=false;vertical=false;break;
@@ -229,7 +258,7 @@ public partial class MainActivity
         }
         public override bool OnTouchEvent(MotionEvent? e)
         {
-            if(e is null || !dragging)return base.OnTouchEvent(e);
+            if(e is null || !dragging || !CanSwipe)return base.OnTouchEvent(e);
             if(e.ActionMasked==MotionEventActions.Move)
             {
                 card.TranslationX=Math.Clamp(initial+e.GetX()-startX,-Width,0);
@@ -238,10 +267,12 @@ public partial class MainActivity
             if(e.ActionMasked is MotionEventActions.Up or MotionEventActions.Cancel)
             {
                 var remove=e.ActionMasked==MotionEventActions.Up && -card.TranslationX>=Width*.5f;
+                var version=bindingVersion;
                 var target=remove?-Width:0;
                 var animation=card.Animate()!.TranslationX(target)!.SetDuration(160)!;
                 animation.WithEndAction(new Java.Lang.Runnable(()=>
                 {
+                    if(version!=bindingVersion)return;
                     if(remove){delete();card.TranslationX=0;}
                     if(card.TranslationX==0){Background!.Alpha=0;trash.Visibility=ViewStates.Invisible;}
                 }));

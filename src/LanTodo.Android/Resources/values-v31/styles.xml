@@ -2,7 +2,7 @@
   <style name="LanTodoLaunchTheme" parent="LanTodoTheme">
     <item name="android:windowBackground">@drawable/launch_background</item>
     <item name="android:windowSplashScreenBackground">#F5F7FA</item>
-    <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_launcher</item>
+    <item name="android:windowSplashScreenAnimatedIcon">@drawable/launch_empty</item>
     <item name="android:windowSplashScreenAnimationDuration">0</item>
   </style>
 </resources>

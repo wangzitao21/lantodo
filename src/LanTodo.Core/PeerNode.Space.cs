@@ -119,6 +119,7 @@ public sealed partial class PeerNode
         space.Merge(reply.Space);
         if (!identity.IsTrusted(peerId)) throw new UnauthorizedAccessException("设备已移出空间，本机数据仍保留。");
         LearnRoutes(reply.Routes);
+        PeerSeen(peerId);
     }
     private async Task MeshLoop(CancellationToken token)
     {
@@ -127,13 +128,14 @@ public sealed partial class PeerNode
         {
             while (!token.IsCancellationRequested)
             {
+                var configVersion=Interlocked.Read(ref localVersion);
                 var space = identity.Space;
                 var desired = space is null ? [] : space.Snapshot.Events.Where(e => e.Body.Kind != "remove" && e.Body.Subject != identity.Id).Select(e => (space.Root, Id: e.Body.Subject)).ToHashSet();
                 foreach (var key in workers.Keys.Except(desired).ToArray())
                 { var worker = workers[key]; worker.Stop.Cancel(); await worker.Task; worker.Stop.Dispose(); workers.Remove(key); meshStates.TryRemove(key.Id, out _); }
                 foreach (var key in desired.Except(workers.Keys))
                 { var stop = CancellationTokenSource.CreateLinkedTokenSource(token); workers[key] = (stop, Task.Run(() => MeshPeerLoop(key.Id, key.Root, stop.Token))); }
-                await Task.Delay(500, token);
+                await WaitForLocalChange(configVersion, TimeSpan.FromMinutes(5), token);
             }
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
@@ -159,23 +161,23 @@ public sealed partial class PeerNode
             while (!token.IsCancellationRequested && identity.Space?.Root == root)
             {
                 long version = Interlocked.Read(ref localVersion); string? used = null; string? remoteGeneration = null; Exception? error = null;
-                foreach (var address in AddressesFor(id))
+                long routesVersion = Interlocked.Read(ref connectionVersion);
+                try
                 {
-                    try
-                    {
-                        meshStates[id] = (new(id, address, "正在同步", success), -1);
-                        remoteGeneration = await AtAddress(address, ep => SyncCoreAsync(ep, id, token), token);
-                        used = address; break;
-                    }
-                    catch (Exception ex) when (ex is not OutOfMemoryException && !token.IsCancellationRequested) { error = ex; }
+                    meshStates[id] = (new(id, "", "正在连接", success), -1); Changed?.Invoke();
+                    using var connection = await ConnectPeer(id, token);
+                    meshStates[id] = (new(id, connection.Address, "正在同步", success), -1);
+                    remoteGeneration = await SyncConnectionAsync(connection.Stream, id, token);
+                    used = connection.Address;
                 }
+                catch (Exception ex) when (ex is not OutOfMemoryException && !token.IsCancellationRequested) { error = ex; }
                 if (used is null)
                 {
                     if (!meshStates.TryGetValue(id, out var recent) || recent.Status.LastSuccess is not { } received || DateTimeOffset.Now - received > TimeSpan.FromSeconds(30))
                         meshStates[id] = (new(id, "", "等待连接", success, error?.Message), -1);
                     Changed?.Invoke();
                     failures = Math.Min(failures + 1, 6);
-                    await WaitForLocalChange(version, TimeSpan.FromSeconds(identity.IsTrusted(id) ? Math.Min(120, 3 * Math.Pow(2, failures - 1)) : 300), token); continue;
+                    await WaitForLocalChange(version, TimeSpan.FromSeconds(identity.IsTrusted(id) ? Math.Min(120, 3 * Math.Pow(2, failures - 1)) : 300), token, routesVersion); continue;
                 }
                 failures = 0; success = DateTimeOffset.Now;
                 meshStates[id] = (new(id, used, "已同步", success), version); Changed?.Invoke();
@@ -183,22 +185,11 @@ public sealed partial class PeerNode
                 while (version == Interlocked.Read(ref localVersion) && identity.IsTrusted(id) && DateTimeOffset.Now - success < ReconcileInterval)
                 {
                     if (remoteGeneration is null) break;
-                    using var wait = CancellationTokenSource.CreateLinkedTokenSource(token);
-                    var local = WaitForLocalChange(version, ReconcileInterval, wait.Token);
-                    var remote = AtAddress(used, async ep =>
+                    try
                     {
-                        using var tcp = new TcpClient(); using var tls = await Connect(tcp, ep, id, wait.Token);
-                        await SpaceHello(tls, id, wait.Token);
-                        await Wire.Write(tls, new("watch", Generation: remoteGeneration), wait.Token);
-                        var reply = await Wire.Read(tls, wait.Token); ReadPeerState(reply, id);
-                        if (reply.Kind != "changed") throw new IOException("连接已改变。");
-                        return reply.Generation;
-                    }, wait.Token);
-                    var completed = await Task.WhenAny(local, remote); wait.Cancel();
-                    try { await local; } catch (OperationCanceledException) when (wait.IsCancellationRequested) { }
-                    string? next = null;
-                    try { next = await remote; } catch (Exception ex) when (ex is not OutOfMemoryException) { break; }
-                    if (completed == local || next != remoteGeneration) break;
+                        if (await WaitForPeerChange(used, id, remoteGeneration, version, token) != remoteGeneration) break;
+                    }
+                    catch (Exception ex) when (ex is not OutOfMemoryException && !token.IsCancellationRequested) { break; }
                 }
             }
         }

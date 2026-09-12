@@ -76,7 +76,8 @@ public sealed partial class DeviceIdentity : IDisposable
         }
     }
 
-    public DeviceIdentity(IProfileDatabase database, string defaultName)
+    public DeviceIdentity(IProfileDatabase database, string defaultName) : this(database, defaultName, null) { }
+    internal DeviceIdentity(IProfileDatabase database, string defaultName, DeviceIdentity? sharedIdentity)
     {
         this.database = database;
         var key = database.ReadMetadata("identity.pfx");
@@ -94,7 +95,12 @@ public sealed partial class DeviceIdentity : IDisposable
         }
         // Windows Schannel needs a CNG key container; ephemeral keys fail during TLS credential acquisition.
         var flags = OperatingSystem.IsWindows() ? X509KeyStorageFlags.UserKeySet : X509KeyStorageFlags.EphemeralKeySet;
-        Certificate = X509CertificateLoader.LoadPkcs12(key, null, flags);
+        // Additional local spaces normally contain the same identity. Duplicate the
+        // certificate handle instead of repeating PKCS#12 key derivation/import.
+        // Compare persisted bytes first: a genuinely different identity must remain independent.
+        Certificate = sharedIdentity is not null && sharedIdentity.database.ReadMetadata("identity.pfx") is { } sharedKey && key.AsSpan().SequenceEqual(sharedKey)
+            ? new X509Certificate2(sharedIdentity.Certificate)
+            : X509CertificateLoader.LoadPkcs12(key, null, flags);
         if (!Certificate.HasPrivateKey) throw new InvalidDataException("设备密钥无效。");
         Id = Fingerprint(Certificate);
         var name = database.ReadMetadata("name.json");

@@ -437,6 +437,10 @@ ReplicaTests.Register(tests);
 SpaceTests.Register(tests);
 AttachmentTests.Register(tests);
 WorkspaceTests.Register(tests);
+InteractionTests.Register(tests);
+ReliabilityTests.Register(tests);
+StartupTests.Register(tests);
+ResponsivenessTests.Register(tests);
 if(args.Length>0)tests.RemoveAll(t=>!args.Any(a=>t.Name.Contains(a,StringComparison.OrdinalIgnoreCase)));
 int failed=0;
 foreach(var test in tests)

@@ -194,8 +194,11 @@ sealed class Server : IAsyncDisposable
         using var http=new HttpClient(new HttpClientHandler { CookieContainer=new CookieContainer() }) { BaseAddress=new Uri($"http://127.0.0.1:{webPort}") };
         using var anonymous=new HttpClient { BaseAddress=http.BaseAddress };
         async Task<HttpResponseMessage> Post(HttpClient client,string path,string body="{}") => await client.PostAsync(path,new StringContent(body,System.Text.Encoding.UTF8,"application/json"));
-        var first=await http.GetAsync("/api/status");first.EnsureSuccessStatusCode();
-        if(File.Exists(Path.Combine(directory,"admin-token")))throw new Exception("First launch generated a required token");
+        var first=await http.GetAsync("/api/status");
+        if(first.StatusCode!=HttpStatusCode.Unauthorized)throw new Exception("First launch allowed anonymous administration");
+        var initialToken=File.ReadAllText(Path.Combine(directory,"admin-token")).Trim();
+        http.DefaultRequestHeaders.Authorization=new("Bearer",initialToken);
+        (await Post(http,"/api/login")).EnsureSuccessStatusCode();http.DefaultRequestHeaders.Authorization=null;
         var html=await http.GetStringAsync("/");if(html.Contains("revisionCount")||html.Contains("订阅"))throw new Exception("Removed dashboard sections remain");
         using var origin=new HttpRequestMessage(HttpMethod.Post,"/api/security") { Content=new StringContent(JsonSerializer.Serialize(new { secret=AdminToken }),System.Text.Encoding.UTF8,"application/json") };
         origin.Headers.Add("Origin","https://unrelated.example");
@@ -213,7 +216,7 @@ sealed class Server : IAsyncDisposable
         (await Post(http,"/api/security",JsonSerializer.Serialize(new { secret=AdminToken+"-changed" }))).EnsureSuccessStatusCode();
         anonymous.DefaultRequestHeaders.Authorization=new("Bearer",AdminToken);
         if((await anonymous.GetAsync("/api/status")).StatusCode!=HttpStatusCode.Unauthorized)throw new Exception("Old token remains valid");
-        Console.WriteLine("PASS NAS setup: anonymous first use, same-origin setup, token enforcement, persistent session across restart, logout/login and token rotation.");
+        Console.WriteLine("PASS NAS setup: protected first use, same-origin setup, token enforcement, persistent session across restart, logout/login and token rotation.");
     }
     public async Task<string> CommandWithInput(string? input, params string[] args)
     {

@@ -15,13 +15,14 @@ public sealed partial class AppRuntime : IAsyncDisposable
     private readonly List<Session> sessions = new();
     private readonly Session primary;
     private volatile Session active;
-    private bool networkEnabled;
+    private bool networkEnabled, lowPower;
     public event Action? DataChanged;
     public event Action? StatusChanged;
     public event Action? MembershipChanged;
     public event Action? ActiveSpaceChanged;
     public Func<bool>? CanSwitchSpace { get; set; }
     public TodoStore Store => primary.Store;
+    public LocalWriteQueue LocalWrites { get; } = new();
     public DeviceIdentity Identity => active.Identity;
     public PeerNode Node => active.Node;
     public ReplicaSettings Replicas => active.Replicas;
@@ -32,9 +33,10 @@ public sealed partial class AppRuntime : IAsyncDisposable
     public bool ShowDeviceSource { get; private set; }
     public SpaceInfo[] Spaces { get { lock(gate) return sessions.Where(s=>!s.Deleted).Select(s=>new SpaceInfo(s.Key,s.Identity.SpaceName,s.Identity.Space?.Root,s==active,s.Identity.Space?.Contains(s.Identity.Id)==true,s.Identity.Devices.Length+1,s.Node.Status)).ToArray(); } }
     public void SetShowDeviceSource(bool value) { primary.Store.Database.WriteMetadata("show-device-source", [value ? (byte)1 : (byte)0]); ShowDeviceSource=value; }
-    public AppRuntime(string path, string deviceName, int port=PeerNode.DefaultPort)
+    public AppRuntime(string path, string deviceName, int port=PeerNode.DefaultPort, Action<string, long>? startupTiming=null)
     {
-        primary=Open("",path,deviceName,port); active=primary;
+        var startupClock=System.Diagnostics.Stopwatch.StartNew();
+        primary=Open("",path,deviceName,port,startupTiming:startupTiming); active=primary;
         sessions.Add(primary);
         try
         {
@@ -48,11 +50,12 @@ public sealed partial class AppRuntime : IAsyncDisposable
                 {
                     var directory=Path.Combine(path,"spaces",key);
                     if(!File.Exists(Path.Combine(directory,SqliteProfile.FileName)))throw new IOException("空间资料丢失，请恢复完整的数据目录。");
-                    sessions.Add(Open(key,directory,deviceName,port,Store));
+                    sessions.Add(Open(key,directory,deviceName,port,Store,primary.Identity,startupTiming));
                 }
                 active=sessions.Single(s=>s.Key==catalog.Active);
             }
             primary.Node.ResolveSpace=root=>{lock(gate)return root is null ? primary.Node : sessions.FirstOrDefault(s=>s.Identity.Space?.Root==root)?.Node;};
+            primary.Node.PeerDiscovered=(id,newRoute)=>{lock(gate)foreach(var session in sessions.Where(s=>s!=primary && s.Identity.IsTrusted(id)))session.Node.WakeDiscovery(id,newRoute);};
             MergeLegacyContent();
             foreach(var session in sessions)Attach(session);
             if(active.Deleted)
@@ -60,15 +63,20 @@ public sealed partial class AppRuntime : IAsyncDisposable
                 active=sessions.FirstOrDefault(s=>!s.Deleted)??AddSession();
                 PersistCatalog();
             }
+            startupTiming?.Invoke("RuntimeReady",startupClock.ElapsedMilliseconds);
         }
         catch { foreach(var session in sessions){session.Identity.Dispose();session.Store.Dispose();}networkGate.Dispose();throw; }
     }
-    private static Session Open(string key,string path,string name,int port,TodoStore? content=null)
+    private static Session Open(string key,string path,string name,int port,TodoStore? content=null,DeviceIdentity? sharedIdentity=null,Action<string,long>? startupTiming=null)
     {
+        var clock=System.Diagnostics.Stopwatch.StartNew();
         var store=new TodoStore(path); DeviceIdentity? identity=null;
+        startupTiming?.Invoke("StoreOpen",clock.ElapsedMilliseconds);
         try
         {
-            identity=new(store.Database,name); if(!identity.NeedsSpaceUpgrade)identity.EnsureSpace();
+            clock.Restart();
+            identity=new(store.Database,name,sharedIdentity); if(!identity.NeedsSpaceUpgrade)identity.EnsureSpace();
+            startupTiming?.Invoke("IdentityAndSpace",clock.ElapsedMilliseconds);
             if(store.SpaceDeleted)
             {
                 // Older builds used the same flag to erase content. It now retires only the network membership.
@@ -82,11 +90,14 @@ public sealed partial class AppRuntime : IAsyncDisposable
     }
     private void Attach(Session session)
     {
+        lock(gate)displayNames=null;
         if(session!=primary)session.Node.Gateway=primary.Node;
         session.Node.ReconcileInterval=TimeSpan.FromHours(ReconcileHours);
+        session.Node.DiscoveryInterval=TimeSpan.FromSeconds(lowPower?120:30);
+        session.Node.AttachmentScanInterval=TimeSpan.FromSeconds(lowPower?120:30);
         if(session==primary)session.Store.Changed+=()=>DataChanged?.Invoke();
         session.Node.Changed+=()=>StatusChanged?.Invoke();
-        session.Identity.TrustChanged+=()=>MembershipChanged?.Invoke();
+        session.Identity.TrustChanged+=()=>{lock(gate)displayNames=null;MembershipChanged?.Invoke();};
     }
     private void PersistCatalog() => primary.Store.Database.WriteMetadata("spaces-catalog.json",JsonSerializer.SerializeToUtf8Bytes(new Catalog(active.Key,sessions.Where(s=>s!=primary).Select(s=>s.Key).ToArray()),Json.Options));
     public void SelectSpace(string key)
@@ -110,7 +121,7 @@ public sealed partial class AppRuntime : IAsyncDisposable
                 database.WriteMetadata("identity.pfx",primary.Store.Database.ReadMetadata("identity.pfx")!);
                 database.WriteMetadata("name.json",JsonSerializer.SerializeToUtf8Bytes(Identity.Name,Json.Options));
             }
-            var session=Open(key,path,Identity.Name,PeerNode.DefaultPort,Store);sessions.Add(session);Attach(session);PersistCatalog();
+            var session=Open(key,path,Identity.Name,PeerNode.DefaultPort,Store,primary.Identity);sessions.Add(session);Attach(session);PersistCatalog();
             if(networkEnabled)session.Node.Start(false);
             return session;
         }
@@ -164,11 +175,25 @@ public sealed partial class AppRuntime : IAsyncDisposable
         finally { networkGate.Release(); }
     }
     public void RequestSync() { lock(gate)foreach(var session in sessions)session.Node.RequestSync(); }
+    public void RequestReconnect() { lock(gate)foreach(var session in sessions)session.Node.RequestReconnect(); }
+    public void Discover() => primary.Node.RequestDiscovery();
     public void SetReconcileHours(int hours)
     {
         if(hours is not (1 or 2))throw new ArgumentOutOfRangeException(nameof(hours));
         primary.Store.Database.WriteMetadata("sync-settings.json",JsonSerializer.SerializeToUtf8Bytes(hours));ReconcileHours=hours;
         lock(gate)foreach(var session in sessions)session.Node.ReconcileInterval=TimeSpan.FromHours(hours);
+    }
+    public void SetLowPower(bool enabled)
+    {
+        lock (gate)
+        {
+            lowPower = enabled;
+            foreach (var session in sessions)
+            {
+                session.Node.DiscoveryInterval = TimeSpan.FromSeconds(enabled ? 120 : 30);
+                session.Node.AttachmentScanInterval = TimeSpan.FromSeconds(enabled ? 120 : 30);
+            }
+        }
     }
     public async Task SetNetworkAsync(bool enabled)
     {
@@ -219,6 +244,7 @@ public sealed partial class AppRuntime : IAsyncDisposable
     }
     public async ValueTask DisposeAsync()
     {
+        await LocalWrites.DisposeAsync();
         await SetNetworkAsync(false);
         foreach(var session in sessions){session.Identity.Dispose();session.Store.Dispose();}
         networkGate.Dispose();

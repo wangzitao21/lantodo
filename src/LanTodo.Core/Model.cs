@@ -7,10 +7,13 @@ namespace LanTodo.Core;
 public sealed record TodoData(string Title, string Notes = "", string? Date = null,
     string? Time = null, bool Completed = false, bool Deleted = false,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] Attachment[]? Attachments = null,
-    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)] bool Purged = false)
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)] bool Purged = false,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)] bool Starred = false,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] string? Color = null)
 {
     public void Validate()
     {
+        if (Color is not (null or "sand" or "mint" or "sky" or "rose" or "lavender")) throw new InvalidDataException("背景色无效。");
         if (Purged && !Deleted) throw new InvalidDataException("彻底清除的记录必须处于删除状态。");
         if (Attachments is { Length: > 32 }) throw new InvalidDataException("每条消息最多添加 32 个附件。");
         if (Attachments is not null) foreach (var attachment in Attachments) attachment.Validate();

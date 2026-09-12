@@ -28,9 +28,16 @@ public sealed partial class PeerNode : IAsyncDisposable
     private readonly ConcurrentDictionary<string, FoundPeer> found = new();
     private readonly ConcurrentDictionary<string, byte> syncing = new();
     private readonly ConcurrentDictionary<string, DateTimeOffset> peerActivity = new();
-    public string DeviceState(string id) => !identity.IsTrusted(id) ? "已取消绑定" :
-        ReplicaStatuses.FirstOrDefault(s => s.DeviceId == id)?.State ??
-        (peerActivity.TryGetValue(id, out var seen) && DateTimeOffset.UtcNow - seen < TimeSpan.FromSeconds(45) ? "最近已连接" : "已绑定 · 等待连接");
+    public bool IsOnline => lifetime is not null && (identity.Space is null || identity.Space.Contains(identity.Id)) && identity.Devices.Any(d => IsDeviceOnline(d.Id));
+    public bool IsDeviceOnline(string id) => lifetime is not null && (identity.Space is null || identity.Space.Contains(identity.Id)) && identity.IsTrusted(id) &&
+        peerActivity.TryGetValue(id, out var seen) && DateTimeOffset.UtcNow - seen < TimeSpan.FromSeconds(30);
+    public string DeviceState(string id) => IsDeviceOnline(id) ? "在线" : "当前不在线";
+    private void PeerSeen(string id)
+    {
+        bool wasOnline=IsDeviceOnline(id);
+        peerActivity[id]=DateTimeOffset.UtcNow;
+        if(!wasOnline) Changed?.Invoke();
+    }
     private void ReadPeerState(Packet packet, string peerId)
     {
         if (identity.Space is { } space)
@@ -46,7 +53,7 @@ public sealed partial class PeerNode : IAsyncDisposable
             peerActivity.TryRemove(peerId, out _);
             throw new UnauthorizedAccessException(packet.Kind == "binding-deleted" ? "对方已删除绑定，本机记录已移除。" : "对方已取消绑定，请使用新配对码重新连接。");
         }
-        if (identity.IsTrusted(peerId)) { identity.MergeLabels(packet.Labels); peerActivity[peerId] = DateTimeOffset.UtcNow; }
+        if (identity.IsTrusted(peerId)) { identity.MergeLabels(packet.Labels); PeerSeen(peerId); }
     }
     private async Task<bool> ReplyIfUnbound(SslStream tls, string peerId, CancellationToken token)
     {
@@ -72,21 +79,21 @@ public sealed partial class PeerNode : IAsyncDisposable
     private volatile string generation = Guid.NewGuid().ToString("N");
     public TimeSpan ReconcileInterval { get; set; } = TimeSpan.FromHours(1);
     public TimeSpan DiscoveryInterval { get; set; } = TimeSpan.FromSeconds(30);
+    public TimeSpan AttachmentScanInterval { get; set; } = TimeSpan.FromSeconds(30);
     private int successfulSyncs;
+    private int connectionsOpened;
+    public int ConnectionsOpened => Volatile.Read(ref connectionsOpened);
     public int SuccessfulSyncs => Volatile.Read(ref successfulSyncs);
     private string legacyStatus = "当前仅本机使用";
     public string Status
     {
         get
         {
-            if (identity.Space is not { } space) return legacyStatus;
-            if (!space.Contains(identity.Id)) return "已退出空间 · 本机数据已保留";
-            if (lifetime is null) return "已保存到本机 · 网络已停止";
-            var members = SpaceStatuses;
-            if (members.Length == 0) return "已保存到本机 · 当前仅本机使用";
-            int confirmed = members.Count(s => s.State == "已同步");
-            var summary = $"已保存本机 · {confirmed} 台已确认" + (confirmed < members.Length ? $"，{members.Length - confirmed} 台等待确认" : "");
-            return store.List().Any(t => t.Conflict) ? "存在待确认内容 · " + summary : summary;
+            var peers=SpaceStatuses;var online=peers.Where(s=>IsDeviceOnline(s.DeviceId)).ToArray();
+            if(peers.Length==0)return "仅本机使用 · 已保存";
+            if(online.Length==0)return "已保存到本机 · 等待设备上线";
+            if(online.Any(s=>s.State!="已同步"))return "已保存到本机 · 正在同步";
+            return online.Length<peers.Length?$"已同步 {online.Length} 台 · {peers.Length-online.Length} 台待上线":$"已同步至 {online.Length} 台设备";
         }
     }
     public string? LastError { get; private set; }
@@ -94,8 +101,16 @@ public sealed partial class PeerNode : IAsyncDisposable
     public event Action? Changed;
     internal PeerNode? Gateway { get; set; }
     internal Func<string?, PeerNode?>? ResolveSpace { get; set; }
+    internal Action<string, bool>? PeerDiscovered { get; set; }
+    internal void WakeDiscovery(string? id = null, bool newRoute = false)
+    {
+        Interlocked.Increment(ref connectionVersion);
+        if (newRoute) CancelConnecting(id);
+        WakeReplicas();
+    }
+    public void RequestDiscovery() => announceSignals.Writer.TryWrite(true);
     public int Port => Gateway?.Port ?? ((IPEndPoint?)listener?.LocalEndpoint)?.Port ?? 0;
-    public FoundPeer[] Nearby => Gateway?.Nearby ?? found.Values.Where(p => DateTimeOffset.UtcNow - p.Seen < TimeSpan.FromSeconds(100)).ToArray();
+    public FoundPeer[] Nearby => Gateway?.Nearby ?? found.Values.Where(p => DateTimeOffset.UtcNow - p.Seen < TimeSpan.FromMinutes(5)).ToArray();
 
     public PeerNode(ITodoStore store, DeviceIdentity identity, int port = DefaultPort)
     { this.store = store; this.identity = identity; requestedPort = port; }
@@ -105,6 +120,7 @@ public sealed partial class PeerNode : IAsyncDisposable
         if (lifetime is not null) return;
         lifetime = new();
         var token = lifetime.Token;
+        NetworkChange.NetworkAddressChanged += NetworkChanged;
         store.Changed += DataChanged;
         identity.TrustChanged += RequestSync;
         if (Replicas is not null) Replicas.Changed += RequestSync;
@@ -117,8 +133,8 @@ public sealed partial class PeerNode : IAsyncDisposable
             listener.Start(8);
             }
             // Network tasks must never capture the WPF/Android UI synchronization context.
-            var jobs = new List<Task> { Task.Run(() => FixedPeersLoop(token)), Task.Run(() => MeshLoop(token)), Task.Run(() => AttachmentScanLoop(token)) };
-            if(Gateway is null) jobs.Add(Task.Run(()=>AcceptLoop(token)));
+            var jobs = new List<Task> { Task.Run(() => FixedPeersLoop(token)), Task.Run(() => MeshLoop(token)) };
+            if(Gateway is null) { jobs.Add(Task.Run(()=>AcceptLoop(token)));jobs.Add(Task.Run(()=>AttachmentScanLoop(token))); }
             string? discoveryError = null;
             if (enableDiscovery && Gateway is null)
             {
@@ -146,17 +162,24 @@ public sealed partial class PeerNode : IAsyncDisposable
         catch (Exception ex)
         {
             lifetime.Cancel(); listener?.Stop(); discovery?.Dispose(); lifetime.Dispose(); lifetime = null;
+            NetworkChange.NetworkAddressChanged -= NetworkChanged;
             store.Changed -= DataChanged; identity.TrustChanged -= RequestSync;
             if (Replicas is not null) Replicas.Changed -= RequestSync;
             SetStatus("局域网暂不可用；本机可正常使用", ex.Message);
         }
     }
 
+    private void NetworkChanged(object? sender,EventArgs args)
+    {
+        if(lifetime is null)return;
+        peerActivity.Clear();RequestReconnect();
+    }
     private void DataChanged()
     {
         Interlocked.Increment(ref localVersion);
-        WakeReplicas();
         generation = Guid.NewGuid().ToString("N");
+        WakeReplicas();
+        Changed?.Invoke();
         announceSignals.Writer.TryWrite(true);
         syncSignals.Writer.TryWrite(true);
         if (HasFixedPeers) SetStatus("已保存本机 · 等待 NAS 确认");
@@ -168,6 +191,7 @@ public sealed partial class PeerNode : IAsyncDisposable
         WakeReplicas();
         Interlocked.Exchange(ref requestedSync,1);
         announceSignals.Writer.TryWrite(true); syncSignals.Writer.TryWrite(true);
+        Changed?.Invoke();
     }
     private static async Task WaitSignal(Channel<bool> channel, TimeSpan delay, CancellationToken token)
     {
@@ -236,13 +260,16 @@ public sealed partial class PeerNode : IAsyncDisposable
                 var beacon = Json.Read<Beacon>(received.Buffer);
                 if (beacon.Protocol != 1 || !Json.IsHash(beacon.DeviceId) || beacon.DeviceId == identity.Id || beacon.Port is < 1024 or > 65535) continue;
                 // Discovery is an untrusted hint; identity is established only by pinned TLS.
+                PruneDiscovery();
                 if (found.Count >= 128 && !found.ContainsKey(beacon.DeviceId)) continue;
                 if (beacon.Generation is { Length: > 64 }) continue;
                 var previous = found.GetValueOrDefault(beacon.DeviceId);
                 found[beacon.DeviceId] = new(beacon.DeviceId, new IPEndPoint(received.RemoteEndPoint.Address, beacon.Port), DateTimeOffset.UtcNow, beacon.Generation);
-                if (previous is null || previous.Generation != beacon.Generation || previous.Endpoint.Address.ToString() != received.RemoteEndPoint.Address.ToString())
+                if (previous is null || previous.Generation != beacon.Generation || previous.Endpoint.Address.ToString() != received.RemoteEndPoint.Address.ToString() || DateTimeOffset.UtcNow - previous.Seen > TimeSpan.FromSeconds(40))
                 {
-                    if (identity.Space is not null && previous is null) RequestSync();
+                    // A discovery hint wakes retries without changing our own generation or causing beacon echoes.
+                    bool newRoute = previous is null || previous.Endpoint.Address.ToString() != received.RemoteEndPoint.Address.ToString() || previous.Endpoint.Port != beacon.Port;
+                    WakeDiscovery(beacon.DeviceId, newRoute); PeerDiscovered?.Invoke(beacon.DeviceId, newRoute);
                     syncSignals.Writer.TryWrite(true);
                     if (previous is null) announceSignals.Writer.TryWrite(true); // Reply promptly to a newly arriving device.
                 }
@@ -257,8 +284,9 @@ public sealed partial class PeerNode : IAsyncDisposable
     {
         while (!token.IsCancellationRequested)
         {
+            PruneDiscovery();
             // Explicit manual sync and network recovery also bypass an earlier failed connection's backoff.
-            if (identity.Space is not null) { try { await Task.Delay(1000, token); } catch (OperationCanceledException) { break; } continue; }
+            if (identity.Space is not null) { try { await WaitSignal(syncSignals, TimeSpan.FromSeconds(15), token); Changed?.Invoke(); } catch (OperationCanceledException) { break; } continue; }
             if (Interlocked.Exchange(ref requestedSync,0) == 1) schedules.Clear();
             foreach (var peer in Nearby.Where(p => (identity.IsTrusted(p.Id) || identity.RevokedDevices.Any(d => d.Id == p.Id)) && (Replicas?.Current.LanEnabled ?? true) && !IsFixedPeer(p.Id)))
             {
@@ -280,10 +308,15 @@ public sealed partial class PeerNode : IAsyncDisposable
                 }
                 finally { syncing.TryRemove(peer.Id, out _); }
             }
-            foreach (var peer in found.Values.Where(p => DateTimeOffset.UtcNow - p.Seen > TimeSpan.FromSeconds(100))) { found.TryRemove(peer.Id, out _); schedules.Remove(peer.Id); }
+            foreach (var id in schedules.Keys.Where(id => !found.ContainsKey(id)).ToArray()) schedules.Remove(id);
             if (Nearby.All(p => !identity.IsTrusted(p.Id)) && !HasFixedPeers) SetStatus("已保存到本机 · 等待设备连接");
             try { await WaitSignal(syncSignals, TimeSpan.FromSeconds(5), token); } catch (OperationCanceledException) { break; }
         }
+    }
+    private void PruneDiscovery()
+    {
+        foreach (var peer in found.Values.Where(p => DateTimeOffset.UtcNow - p.Seen > TimeSpan.FromMinutes(5)))
+            found.TryRemove(peer.Id, out _);
     }
     private static async Task DelayRetry(CancellationToken token) { try { await Task.Delay(4000, token); } catch (OperationCanceledException) { } }
 
@@ -330,6 +363,7 @@ public sealed partial class PeerNode : IAsyncDisposable
                 CertificateRevocationCheckMode = X509RevocationMode.NoCheck,
                 LocalCertificateSelectionCallback = (_, _, _, _, _) => identity.Certificate
             }, timeout.Token);
+            Interlocked.Increment(ref connectionsOpened);
             return tls;
         }
         catch { tls.Dispose(); throw; }
@@ -344,6 +378,11 @@ public sealed partial class PeerNode : IAsyncDisposable
         SetStatus("正在同步");
         using var tcp = new TcpClient();
         using var tls = await Connect(tcp, endpoint, peerId, token);
+        return await SyncConnectionAsync(tls, peerId, token, yieldForEdits: false);
+    }
+
+    private async Task<string?> SyncConnectionAsync(SslStream tls, string peerId, CancellationToken token, bool yieldForEdits = true)
+    {
         var connectionRoot = identity.Space?.Root;
         if (connectionRoot is not null) await SpaceHello(tls, peerId, token);
         async Task<Packet> Exchange(Packet packet)
@@ -369,23 +408,31 @@ public sealed partial class PeerNode : IAsyncDisposable
             if (remoteIds.Count > 1_000_000) throw new InvalidDataException("版本数超出当前客户端容量。");
             if (page.Done) break;
         }
-        var localIds = store.Export().Select(r => r.Id).ToHashSet(StringComparer.Ordinal);
+        var local = store.Export();
+        var localIds = local.Select(r => r.Id).ToHashSet(StringComparer.Ordinal);
+        var remoteSet = remoteIds.ToHashSet(StringComparer.Ordinal);
+        if (!remoteBlobs && local.Any(r => r.Body.Data.Attachments is { Length: > 0 }))
+            throw new IOException("对方不支持附件，请将所有设备与 NAS 升级至 v1.0.1。");
+        // Deliver locally saved text before waiting for the remote history download.
+        // Export order includes every missing parent before its children.
+        foreach (var batch in local.Where(r => !remoteSet.Contains(r.Id)).Chunk(4))
+        {
+            var reply = await Exchange(new("put", Revisions: batch));
+            if (reply.Kind != "saved") throw new InvalidDataException("对方尚未确认保存。");
+        }
         foreach (var batch in remoteIds.Where(id => !localIds.Contains(id)).Chunk(4))
         {
             var reply = await Exchange(new("get", Ids: batch));
             if (reply.Kind != "revisions" || reply.Revisions is null || !reply.Revisions.Select(r => r.Id).SequenceEqual(batch)) throw new InvalidDataException("收到的版本与请求不符。");
             store.Import(reply.Revisions);
         }
-        var remoteSet = remoteIds.ToHashSet(StringComparer.Ordinal);
-        if (!remoteBlobs && store.Export().Any(r => r.Body.Data.Attachments is { Length: > 0 }))
-            throw new IOException("对方不支持附件，请将所有设备与 NAS 升级至 v1.0.1。");
-        foreach (var batch in store.Export().Where(r => !remoteSet.Contains(r.Id)).Chunk(4))
-        {
-            var reply = await Exchange(new("put", Revisions: batch));
-            if (reply.Kind != "saved") throw new InvalidDataException("对方尚未确认保存。");
-        }
         if (remoteBlobs && store is TodoStore files)
-            await SyncAttachments(files, Exchange, token);
+        {
+            // Include this round's imports, but not a new capture that arrived
+            // after the outgoing snapshot (including during history download).
+            int revisionCount = localIds.Count + remoteIds.Count(id => !localIds.Contains(id));
+            await SyncAttachments(files, Exchange, token, () => yieldForEdits && revisionCount != files.RevisionCount);
+        }
         var done = await Exchange(new("done"));
         if (done.Kind != "done") throw new InvalidDataException("同步确认失败。");
         LastSync = DateTimeOffset.Now;
@@ -450,7 +497,6 @@ public sealed partial class PeerNode : IAsyncDisposable
                 bool spaceAuthenticated = false;
                 Revision[]? snapshot = null;
                 Dictionary<string, Revision>? index = null;
-                HashSet<Attachment>? attachmentIndex = null;
                 string? snapshotGeneration = null;
                 long snapshotVersion = -1;
                 while (!token.IsCancellationRequested)
@@ -475,6 +521,7 @@ public sealed partial class PeerNode : IAsyncDisposable
                         if (request.Port is > 0 and <= 65535 && tcp.Client.RemoteEndPoint is IPEndPoint remote)
                             LearnRoutes([new(peerId, [new IPEndPoint(remote.Address.IsIPv4MappedToIPv6 ? remote.Address.MapToIPv4() : remote.Address, request.Port).ToString()])]);
                         spaceAuthenticated = true;
+                        PeerSeen(peerId);
                         await Wire.Write(tls, new("space-state", Space: space.Snapshot, Routes: ShareRoutes()), token); continue;
                     }
                     if (request.Kind == "pair")
@@ -487,7 +534,7 @@ public sealed partial class PeerNode : IAsyncDisposable
                     }
                     if (identity.Space is not null && !spaceAuthenticated) throw new UnauthorizedAccessException("请先完成空间握手。");
                     if (await ReplyIfUnbound(tls, peerId, token)) return;
-                    identity.MergeLabels(request.Labels); peerActivity[peerId] = DateTimeOffset.UtcNow;
+                    identity.MergeLabels(request.Labels); PeerSeen(peerId);
                     Packet reply;
                     switch (request.Kind)
                     {
@@ -506,7 +553,6 @@ public sealed partial class PeerNode : IAsyncDisposable
                         case "put":
                             if (request.Revisions is null || request.Revisions.Length > 8) throw new InvalidDataException("版本批次无效。");
                             store.Import(request.Revisions);
-                            attachmentIndex = null;
                             reply = new("saved");
                             break;
                         case "done":
@@ -529,19 +575,17 @@ public sealed partial class PeerNode : IAsyncDisposable
                         case "blob-status":
                         case "blob-get":
                         case "blob-put":
-                            attachmentIndex ??= store.Export().SelectMany(r => r.Body.Data.Attachments ?? []).ToHashSet();
-                            reply = HandleAttachment(request, attachmentIndex);
+                            reply = HandleAttachment(request);
                             break;
                         case "watch":
                             if (request.Generation is null || request.Generation.Length > 64) throw new InvalidDataException("变化标记无效。");
                             // Bounded long poll fits the existing 20-second frame deadline. No history is sent while idle.
-                            for (int i = 0; i < 40 && request.Generation == generation; i++)
-                            {
-                                if (await ReplyIfUnbound(tls, peerId, token)) return;
-                                await Task.Delay(250, token);
-                            }
+                            var watchVersion=Interlocked.Read(ref localVersion);
+                            if (request.Generation == generation)
+                                await WaitForLocalChange(watchVersion, TimeSpan.FromSeconds(15), token);
                             if (await ReplyIfUnbound(tls, peerId, token)) return;
-                            await Wire.Write(tls, new("changed", Generation: generation, Labels: identity.Labels), token);
+                            await Wire.Write(tls, new("changed", Generation: generation, Labels: identity.Labels, KeepAlive: request.KeepAlive), token);
+                            if (request.KeepAlive) continue;
                             return;
                         default: throw new InvalidDataException("未知同步命令。");
                     }
@@ -553,12 +597,13 @@ public sealed partial class PeerNode : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         if (lifetime is null) return;
+        NetworkChange.NetworkAddressChanged -= NetworkChanged;
         store.Changed -= DataChanged; identity.TrustChanged -= RequestSync;
         if (Replicas is not null) Replicas.Changed -= RequestSync;
         lifetime.Cancel(); listener?.Stop(); discovery?.Dispose();
         try { await Task.WhenAll(loops.Concat(handlers.Values)).ConfigureAwait(false); }
         catch (OperationCanceledException) { } catch (SocketException) { } catch (ObjectDisposedException) { }
-        finally { lifetime.Dispose(); lifetime = null; found.Clear(); schedules.Clear(); }
+        finally { lifetime.Dispose(); lifetime = null; found.Clear(); schedules.Clear(); peerActivity.Clear(); }
         SetStatus("当前仅本机使用");
     }
 }

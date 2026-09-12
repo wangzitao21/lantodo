@@ -8,6 +8,7 @@ namespace LanTodo.Windows;
 public sealed class TodoEditor : Window
 {
     private Attachment[]? attachments;
+    private TodoData originalData = new("");
     private readonly TextBox title = new(), notes = new() { AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 100, MaxHeight = 220, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
     private readonly DateSelector date = new() { Placeholder = "不设截止日期", Margin = new Thickness(0,4,0,12) };
     private readonly TextBox time = new();
@@ -38,14 +39,34 @@ public sealed class TodoEditor : Window
         { panel.Children.Add(new TextBlock { Text = label }); panel.Children.Add(field); }
         panel.Children.Add(completed);
         if (todo is not null) panel.Children.Add(deleted);
-        Fill(todo?.Data ?? new TodoData(""));
+        var draftKey = "edit:" + (todo?.Id ?? "new");
+        var draft = app.Store.Drafts.Get(draftKey);
+        var expected = draft?.Heads ?? todo?.VersionIds ?? [];
+        bool detached = draft is not null && !expected.Order().SequenceEqual((todo?.VersionIds ?? []).Order());
+        Fill(draft?.Data ?? todo?.Data ?? new TodoData(""));
+        if (draft is not null) panel.Children.Add(SettingsTheme.Hint(detached ? "已恢复本机草稿。原记录已在其他设备修改，本次将另存为新想法。" : "已恢复上次未完成的本机草稿。"));
+        var draftTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
+        bool committed = false, dirty = false;
+        TodoData ReadData() => new(title.Text.Trim(), notes.Text, date.SelectedDate?.ToString("yyyy-MM-dd"), Empty(time.Text), completed.IsChecked == true, deleted.IsChecked == true, attachments, Starred:originalData.Starred, Color:originalData.Color);
+        void PersistDraft()
+        {
+            if (committed || !dirty) return;
+            try { app.Store.SaveDraft(draftKey, new(ReadData(), expected)); }
+            catch (Exception ex) { Title = "草稿未保存 · " + ex.Message; }
+        }
+        void DraftChanged() { dirty = true; draftTimer.Stop(); draftTimer.Start(); }
+        draftTimer.Tick += (_, _) => { draftTimer.Stop(); PersistDraft(); };
+        title.TextChanged += (_, _) => DraftChanged(); notes.TextChanged += (_, _) => DraftChanged(); time.TextChanged += (_, _) => DraftChanged();
+        date.SelectedDateChanged += (_, _) => DraftChanged(); completed.Click += (_, _) => DraftChanged(); deleted.Click += (_, _) => DraftChanged();
+        Closing += (_, _) => PersistDraft(); Closed += (_, _) => draftTimer.Stop();
         var save = new Button { Content = todo?.Conflict == true ? "确认最终版本并保存" : "保存到本机", Background = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(22,125,141)), Foreground = System.Windows.Media.Brushes.White };
         panel.Children.Add(save);
         save.Click += (_, _) =>
         {
             try
             {
-                app.Store.Save(app.Identity.Id, app.Identity.Name, new TodoData(title.Text.Trim(), notes.Text, date.SelectedDate?.ToString("yyyy-MM-dd"), Empty(time.Text), completed.IsChecked == true, deleted.IsChecked == true, attachments), todo?.Id, todo?.VersionIds);
+                app.Store.Save(app.Identity.Id, app.Identity.Name, ReadData(), detached ? null : todo?.Id, detached ? null : expected, draftKey);
+                committed = true;
                 DialogResult = true;
             }
             catch (Exception ex) { ModernDialog.Show(this, ex.Message, "内容尚未保存"); }
@@ -66,5 +87,5 @@ public sealed class TodoEditor : Window
         }
     }
     private static string? Empty(string value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
-    private void Fill(TodoData data) { attachments = data.Attachments; title.Text = data.Title; notes.Text = data.Notes; date.SelectedDate = data.Date is null ? null : DateTime.ParseExact(data.Date,"yyyy-MM-dd",System.Globalization.CultureInfo.InvariantCulture); time.Text = data.Time ?? ""; completed.IsChecked = data.Completed; deleted.IsChecked = data.Deleted; }
+    private void Fill(TodoData data) { originalData=data; attachments = data.Attachments; title.Text = data.Title; notes.Text = data.Notes; date.SelectedDate = data.Date is null ? null : DateTime.ParseExact(data.Date,"yyyy-MM-dd",System.Globalization.CultureInfo.InvariantCulture); time.Text = data.Time ?? ""; completed.IsChecked = data.Completed; deleted.IsChecked = data.Deleted; }
 }

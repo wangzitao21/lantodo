@@ -37,9 +37,11 @@ $env:LANTODO_KEYSTORE = '你的密钥绝对路径'
 
 密钥别名默认 `lantodo`，可用 `LANTODO_KEY_ALIAS` 覆盖。本机已有 `.tools/signing/lantodo.p12` 与 `password.txt` 时脚本沿用原签名。覆盖升级必须使用同一密钥，不要卸载旧应用或清除数据。源码仓库不提供发布密钥。
 
+Android Release 使用 partial trimming 和 profiled AOT，保留 Core/Android 程序集中的反射序列化类型与回调；Debug 不裁剪、不做 AOT。发布测试必须使用正式 APK，覆盖旧资料读取、发送、同步和附件，不能只验证 Debug。多 ABI 发布关闭主机运行时标识自动推断，避免 .NET SDK 把 Windows 主机标识带入 Android 发布。
+
 ## 输出与版本
 
-应用对外版本保持 **v1.0.1**。共享配置 `Directory.Build.props` 中的 `Version` 和 `InformationalVersion` 均为 `1.0.1`。Android `versionName` 从共享配置读取，`versionCode=13` 为安装序号，本次修订递增安装序号，对外仍显示 v1.0.1，使用原签名覆盖升级。SQLite schema、任务版本和备份格式继续保持 v1；空间授权协议使用 lantodo2，须全端升级；已有统一空间可直接保留，旧版逐台配对需重新加入。
+应用对外版本保持 **v1.0.1**。共享配置 `Directory.Build.props` 中的 `Version` 和 `InformationalVersion` 均为 `1.0.1`。Android `versionName` 从共享配置读取，`versionCode=19` 为安装序号，本次修订递增安装序号，对外仍显示 v1.0.1，使用原签名覆盖升级。SQLite schema、任务版本和备份格式继续保持 v1；空间授权协议使用 lantodo2，须全端升级；已有统一空间可直接保留，旧版逐台配对需重新加入。
 
 展示版本不附加 Git 提交哈希。NAS 本地镜像标签为 `lantodo-nas:1.0.1`，OCI 版本标签为 `1.0.1`；升级版本时一并更新 Dockerfile 与 Compose。
 
@@ -76,3 +78,5 @@ git tag v1.0.1
 ```
 
 `.gitignore` 排除本机工具、安装包、清单、密钥和测试输出。提交前检查暂存文件列表；本地已有 Git 仓库不需要重新初始化。CI 在 Windows 运行核心、NAS 进程与界面测试，编译 Android Debug APK，并在 Linux 运行回归、构建两种 NAS 架构镜像及验证容器启动。CI 配置需推送后实际执行；本机验证不能代替远端结果。当前没有自动发布镜像或 GitHub Release 的流程。
+
+本次终端响应与启动修订的 Android 安装序号为 19；改动与验证范围见 `docs/optimization-build19.md`，前两轮修订见 `docs/optimization-build18.md` 和 `docs/optimization-build17.md`。

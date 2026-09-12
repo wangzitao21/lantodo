@@ -78,6 +78,7 @@ public partial class MainWindow
     }
     private void RenderPending()
     {
+        SaveComposeDraft();
         PendingPanel.Children.Clear();
         foreach (var item in pendingAttachments.ToArray())
         {
@@ -88,6 +89,11 @@ public partial class MainWindow
     private void AddAttachmentView(StackPanel body, Attachment item)
     {
         var available = app.Store.Attachments.Has(item);
+        if(item.IsAudio)
+        {
+            var play=new Button { Content=available?"▶ 播放语音":"语音 · "+app.Store.Attachments.Availability(item),IsEnabled=available,HorizontalAlignment=HorizontalAlignment.Left,ContextMenu=AttachmentMenu(item) };
+            play.Click+=(_,_)=>PlayAudio(item);body.Children.Add(play);
+        }
         if (available && item.Kind == "image")
         {
             var image = new Image { MaxWidth = 240, MaxHeight = 160, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0,8,0,4), Cursor = Cursors.Hand, ContextMenu = AttachmentMenu(item) };
@@ -136,10 +142,41 @@ public partial class MainWindow
     });
     private void PreviewImage(Attachment item) => Run(() =>
     {
-        var bitmap=new BitmapImage();bitmap.BeginInit();bitmap.CacheOption=BitmapCacheOption.OnLoad;bitmap.DecodePixelWidth=1600;bitmap.UriSource=new Uri(app.Store.Attachments.PathFor(item.Hash));bitmap.EndInit();bitmap.Freeze();
-        var panel=new DockPanel();var save=new Button{Content="保存原件",HorizontalAlignment=HorizontalAlignment.Right};save.Click+=(_,_)=>SaveAttachment(item);DockPanel.SetDock(save,Dock.Bottom);panel.Children.Add(save);
-        panel.Children.Add(new Image{Source=bitmap,Stretch=Stretch.Uniform,Margin=new Thickness(16),ContextMenu=AttachmentMenu(item)});
-        var window=new Window{Title=item.Name,Owner=this,Width=900,Height=700,Content=panel,WindowStartupLocation=WindowStartupLocation.CenterOwner};window.PreviewKeyDown+=(_,e)=>{if(e.Key==Key.Escape)window.Close();};window.ShowDialog();
+        var bitmap=new BitmapImage();bitmap.BeginInit();bitmap.CacheOption=BitmapCacheOption.OnLoad;bitmap.UriSource=new Uri(app.Store.Attachments.PathFor(item.Hash));bitmap.EndInit();bitmap.Freeze();
+        var panel=new DockPanel();var toolbar=new StackPanel { Orientation=Orientation.Horizontal,HorizontalAlignment=HorizontalAlignment.Center,Margin=new Thickness(8) };DockPanel.SetDock(toolbar,Dock.Bottom);panel.Children.Add(toolbar);
+        var picture=new Image {Source=bitmap,Stretch=Stretch.Fill,HorizontalAlignment=HorizontalAlignment.Left,VerticalAlignment=VerticalAlignment.Top,ContextMenu=AttachmentMenu(item)};
+        var scroll=new ScrollViewer {Content=picture,HorizontalScrollBarVisibility=ScrollBarVisibility.Auto,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,Background=Brushes.WhiteSmoke};panel.Children.Add(scroll);
+        var zoomText=new TextBlock {VerticalAlignment=VerticalAlignment.Center,MinWidth=56,TextAlignment=TextAlignment.Center};
+        double zoom=1;
+        void SetZoom(double value)
+        {
+            var old=zoom;zoom=Math.Clamp(value,0.05,8);picture.Width=bitmap.PixelWidth*zoom;picture.Height=bitmap.PixelHeight*zoom;zoomText.Text=$"{zoom:P0}";
+            scroll.ScrollToHorizontalOffset((scroll.HorizontalOffset+scroll.ViewportWidth/2)*zoom/old-scroll.ViewportWidth/2);
+            scroll.ScrollToVerticalOffset((scroll.VerticalOffset+scroll.ViewportHeight/2)*zoom/old-scroll.ViewportHeight/2);
+        }
+        void Fit()=>SetZoom(Math.Min(1,Math.Min(Math.Max(1,scroll.ViewportWidth-8)/bitmap.PixelWidth,Math.Max(1,scroll.ViewportHeight-8)/bitmap.PixelHeight)));
+        void ActionButton(string label,Action action){var button=new Button{Content=label};button.Click+=(_,_)=>action();toolbar.Children.Add(button);}
+        ActionButton("−",()=>SetZoom(zoom/1.25));toolbar.Children.Add(zoomText);ActionButton("＋",()=>SetZoom(zoom*1.25));ActionButton("适应窗口",Fit);ActionButton("100%",()=>SetZoom(1));ActionButton("保存原件",()=>SaveAttachment(item));
+        scroll.PreviewMouseWheel+=(_,e)=>{SetZoom(zoom*(e.Delta>0?1.25:0.8));e.Handled=true;};
+        Point? drag=null;double startX=0,startY=0;
+        scroll.PreviewMouseLeftButtonDown+=(_,e)=>{drag=e.GetPosition(scroll);startX=scroll.HorizontalOffset;startY=scroll.VerticalOffset;scroll.CaptureMouse();scroll.Cursor=Cursors.Hand;e.Handled=true;};
+        scroll.PreviewMouseMove+=(_,e)=>{if(drag is {} origin){var current=e.GetPosition(scroll);scroll.ScrollToHorizontalOffset(startX+origin.X-current.X);scroll.ScrollToVerticalOffset(startY+origin.Y-current.Y);}};
+        scroll.PreviewMouseLeftButtonUp+=(_,e)=>{drag=null;scroll.ReleaseMouseCapture();scroll.Cursor=Cursors.Arrow;e.Handled=true;};
+        var window=new Window{Title=item.Name,Owner=this,Width=900,Height=700,Content=panel,WindowStartupLocation=WindowStartupLocation.CenterOwner};window.Loaded+=(_,_)=>Fit();window.PreviewKeyDown+=(_,e)=>{if(e.Key==Key.Escape)window.Close();};window.ShowDialog();
+    });
+    private void PlayAudio(Attachment item) => Run(() =>
+    {
+        var player=new MediaPlayer();var panel=new StackPanel{Margin=new Thickness(24)};
+        panel.Children.Add(new TextBlock{Text=item.Name,TextWrapping=TextWrapping.Wrap,FontSize=16});
+        var label=new TextBlock{Text="正在加载语音…",Margin=new Thickness(0,12,0,12)};panel.Children.Add(label);
+        var play=new Button{Content="暂停",IsEnabled=false};panel.Children.Add(play);bool playing=true;
+        var window=new Window{Title="语音消息",Owner=this,Width=420,Height=240,Content=panel,WindowStartupLocation=WindowStartupLocation.CenterOwner};
+        player.MediaOpened+=(_,_)=>{label.Text=player.NaturalDuration.HasTimeSpan?$"语音 · {player.NaturalDuration.TimeSpan.TotalSeconds:0}秒":"语音";play.IsEnabled=true;player.Play();};
+        player.MediaEnded+=(_,_)=>{player.Position=TimeSpan.Zero;player.Pause();playing=false;play.Content="重新播放";};
+        player.MediaFailed+=(_,args)=>{label.Text="无法播放："+args.ErrorException.Message;play.IsEnabled=false;};
+        play.Click+=(_,_)=>{if(playing)player.Pause();else player.Play();playing=!playing;play.Content=playing?"暂停":"播放";};
+        window.Closed+=(_,_)=>player.Close();window.PreviewKeyDown+=(_,e)=>{if(e.Key==Key.Escape)window.Close();};
+        player.Open(new Uri(app.Store.Attachments.PathFor(item.Hash)));window.ShowDialog();
     });
     private Window? settingsWindow;
     private void Settings_Click(object sender, RoutedEventArgs e)

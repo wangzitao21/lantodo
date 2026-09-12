@@ -79,6 +79,7 @@ public sealed partial class PeerNode
         {
             while (!token.IsCancellationRequested)
             {
+                var configVersion=Interlocked.Read(ref localVersion);
                 var config = Replicas?.Current;
                 var desired = (identity.Space is null && config?.NasEnabled == true ? config.Endpoints! : [])
                     .Where(e => identity.IsTrusted(e.DeviceId) || identity.RevokedDevices.Any(d => d.Id == e.DeviceId)).ToHashSet();
@@ -93,7 +94,7 @@ public sealed partial class PeerNode
                     var stop = CancellationTokenSource.CreateLinkedTokenSource(token);
                     workers.Add(endpoint, (stop, Task.Run(() => FixedPeerLoop(endpoint, stop.Token))));
                 }
-                await Task.Delay(500, token);
+                await WaitForLocalChange(configVersion, TimeSpan.FromMinutes(5), token);
             }
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
@@ -120,43 +121,27 @@ public sealed partial class PeerNode
             while (!token.IsCancellationRequested)
             {
                 var version = Interlocked.Read(ref localVersion);
+                var routesVersion = Interlocked.Read(ref connectionVersion);
                 try
                 {
                     Status("正在同步");
-                    var remoteGeneration = await AtAddress(peer.Address, endpoint => SyncCoreAsync(endpoint, peer.DeviceId, token), token);
+                    string? remoteGeneration;
+                    using (var connection = await ConnectPeer(peer.DeviceId, token, peer.Address))
+                        remoteGeneration = await SyncConnectionAsync(connection.Stream, peer.DeviceId, token);
                     lastSuccess = DateTimeOffset.Now; failures = 0;
                     Status("已同步", version);
                     while (version == Interlocked.Read(ref localVersion) && DateTimeOffset.Now - lastSuccess.Value < ReconcileInterval)
                     {
                         // Older peers have no watch capability; preserve compatibility with bounded polling.
                         if (remoteGeneration is null) { await WaitForLocalChange(version, TimeSpan.FromSeconds(30), token); break; }
-                        using var wait = CancellationTokenSource.CreateLinkedTokenSource(token);
-                        var local = WaitForLocalChange(version, ReconcileInterval, wait.Token);
-                        var remote = AtAddress(peer.Address, async endpoint =>
-                        {
-                            using var tcp = new TcpClient();
-                            using var tls = await Connect(tcp, endpoint, peer.DeviceId, wait.Token);
-                            await Wire.Write(tls, new("watch", Generation: remoteGeneration), wait.Token);
-                            var reply = await Wire.Read(tls, wait.Token);
-                            ReadPeerState(reply, peer.DeviceId);
-                            if (!identity.IsTrusted(peer.DeviceId)) throw new UnauthorizedAccessException("节点授权已取消。");
-                            if (reply.Kind != "changed" || reply.Generation is null || reply.Generation.Length > 64)
-                                throw new InvalidDataException("节点变化通知无效。");
-                            return reply.Generation;
-                        }, wait.Token);
-                        var completed = await Task.WhenAny(local, remote);
-                        wait.Cancel();
-                        try { await local; } catch (OperationCanceledException) when (wait.IsCancellationRequested) { }
-                        string? next = null;
-                        try { next = await remote; } catch (OperationCanceledException) when (wait.IsCancellationRequested && completed == local) { }
-                        if (completed == local || next != remoteGeneration) break;
+                        if (await WaitForPeerChange(peer.Address, peer.DeviceId, remoteGeneration, version, token) != remoteGeneration) break;
                     }
                 }
                 catch (Exception ex) when (ex is not OutOfMemoryException && !token.IsCancellationRequested)
                 {
                     Status("等待重连", error: ex.Message);
                     failures = Math.Min(6, failures + 1);
-                    await WaitForLocalChange(Interlocked.Read(ref localVersion), TimeSpan.FromSeconds(Math.Min(300, 5 * Math.Pow(2, failures - 1))), token);
+                    await WaitForLocalChange(version, TimeSpan.FromSeconds(Math.Min(300, 5 * Math.Pow(2, failures - 1))), token, routesVersion);
                 }
             }
         }
@@ -164,12 +149,46 @@ public sealed partial class PeerNode
         catch (Exception) when (token.IsCancellationRequested) { }
     }
 
-    private async Task WaitForLocalChange(long version, TimeSpan delay, CancellationToken token)
+    private async Task WaitForLocalChange(long version, TimeSpan delay, CancellationToken token, long? routesVersion = null)
     {
         Task signal;
         lock (replicaWakeGate) signal = replicaWake.Task;
-        if (Interlocked.Read(ref localVersion) != version) return;
+        if (Interlocked.Read(ref localVersion) != version || routesVersion is { } route && Interlocked.Read(ref connectionVersion) != route) return;
         try { await signal.WaitAsync(delay, token); }
         catch (TimeoutException) { }
+    }
+
+    private async Task<string?> WaitForPeerChange(string address, string id, string generationAtSync, long version, CancellationToken token)
+    {
+        using var wait = CancellationTokenSource.CreateLinkedTokenSource(token);
+        var local = WaitForLocalChange(version, ReconcileInterval, wait.Token);
+        var remote = AtAddress(address, async endpoint =>
+        {
+            using var tcp = new TcpClient();
+            using var tls = await Connect(tcp, endpoint, id, wait.Token);
+            var root = identity.Space?.Root;
+            if (root is not null) await SpaceHello(tls, id, wait.Token);
+            while (true)
+            {
+                if (identity.Space?.Root != root || !identity.IsTrusted(id)) throw new UnauthorizedAccessException("设备授权已改变。");
+                await Wire.Write(tls, new("watch", Generation: generationAtSync, KeepAlive: true), wait.Token);
+                var reply = await Wire.Read(tls, wait.Token); ReadPeerState(reply, id);
+                if (reply.Kind != "changed" || reply.Generation is null || reply.Generation.Length > 64)
+                    throw new InvalidDataException("设备变化通知无效。");
+                // Older versions ignore KeepAlive and close after one response. Preserve that path.
+                if (!reply.KeepAlive || reply.Generation != generationAtSync) return reply.Generation;
+            }
+        }, wait.Token);
+        try
+        {
+            var completed = await Task.WhenAny(local, remote);
+            return completed == local ? null : await remote;
+        }
+        finally
+        {
+            wait.Cancel();
+            try { await local; } catch (OperationCanceledException) when (wait.IsCancellationRequested) { }
+            try { await remote; } catch (Exception ex) when (ex is not OutOfMemoryException) { }
+        }
     }
 }

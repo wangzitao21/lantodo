@@ -15,12 +15,15 @@ public sealed record Attachment(string Hash, string Name, long Size, string Kind
     }
     [System.Text.Json.Serialization.JsonIgnore]
     public string Key => Hash + (Instance is null ? "" : ":" + Instance);
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool IsAudio => Kind == "file" && Path.GetExtension(Name).ToLowerInvariant() is ".m4a" or ".aac" or ".mp3" or ".wav";
     public string Description => $"{(Kind == "image" ? "图片" : Kind == "folder" ? "文件夹" : "文件")} · {Name} · {(Size < 1048576 ? $"{Size / 1024d:0.#} KB" : $"{Size / 1048576d:0.#} MB")}";
 }
 
 // Content addressed originals, outside revision JSON. Only verified complete files are visible.
-public sealed class AttachmentStore(Func<string> root)
+public sealed class AttachmentStore(Func<string> root, Func<IProfileDatabase>? database = null)
 {
+    internal const string InvalidMetadata = "attachment-invalidations-v1";
     public const int ChunkSize = 256 * 1024;
     public string DirectoryPath => Path.Combine(root(), "attachments");
     private sealed record Index(Dictionary<string,string> Files, string[] Invalid, string[]? Seen = null);
@@ -37,6 +40,8 @@ public sealed class AttachmentStore(Func<string> root)
         var index = File.Exists(path) ? Json.Read<Index>(File.ReadAllBytes(path)) : new(new(), []);
         if(index.Files.Any(p => !Json.IsHash(p.Key) || Path.GetFileName(p.Value) != p.Value || p.Value is "." or ".." || p.Value.IndexOfAny(['/', '\\', ':']) >= 0)) throw new InvalidDataException("附件索引无效。");
         names = index.Files; invalid.Clear(); foreach(var key in index.Invalid) { ValidateKey(key); invalid.Add(key); }
+        if (database?.Invoke().ReadMetadata(InvalidMetadata) is { } committed)
+            foreach (var key in Json.Read<string[]>(committed)) { ValidateKey(key); invalid.Add(key); }
         seen.Clear();foreach(var key in index.Seen??[]){ValidateKey(key);seen.Add(key);}
         loadedRoot = root();
     }
@@ -61,16 +66,48 @@ public sealed class AttachmentStore(Func<string> root)
     }
     private string ReadyPath(string hash) => Path.Combine(TransferPath, hash + ".ready");
     private string PartialPath(string hash) { Directory.CreateDirectory(TransferPath); return Path.Combine(TransferPath,hash + ".part"); }
-    private static void ValidateKey(string key)
+    internal static void ValidateKey(string key)
     { if (key is null || !(Json.IsHash(key) || key.Length == 97 && key[64] == ':' && Json.IsHash(key[..64]) && Guid.TryParseExact(key[65..],"N",out _))) throw new InvalidDataException("附件失效记录无效。"); }
     public string[] InvalidKeys { get { lock(gate) { LoadIndex(); return invalid.Order().ToArray(); } } }
     public bool IsInvalid(Attachment item) { lock(gate) { LoadIndex(); return invalid.Contains(item.Key); } }
+    internal void RememberAvailable(IEnumerable<Attachment> items)
+    {
+        lock (gate)
+        {
+            LoadIndex(); bool changed = false;
+            foreach (var item in items) if (Has(item)) changed |= seen.Add(item.Key);
+            if (changed) PersistIndex();
+        }
+    }
     public void Invalidate(IEnumerable<string> keys)
     {
         var incoming=keys.ToArray(); foreach(var key in incoming) ValidateKey(key);
         bool changed=false;
-        lock(gate) { LoadIndex(); foreach(var key in incoming) changed |= invalid.Add(key); if(changed)PersistIndex(); }
+        lock(gate)
+        {
+            LoadIndex(); var next = invalid.Union(incoming).ToArray(); changed = next.Length != invalid.Count;
+            if (changed) CommitInvalidations(next, bytes =>
+            {
+                if (database is not null) database().WriteMetadata(InvalidMetadata, bytes);
+            });
+        }
         if(changed)Changed?.Invoke();
+    }
+    // The database commit and the in-memory invalidation set advance together. The JSON file
+    // remains a compatibility mirror; a mirror failure cannot undo an acknowledged SQL commit.
+    internal void CommitInvalidations(IEnumerable<string> keys, Action<byte[]> commit)
+    {
+        lock (gate)
+        {
+            LoadIndex(); var next = invalid.Union(keys).ToArray(); foreach (var key in next) ValidateKey(key);
+            commit(System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(next, Json.Options));
+            var previous = invalid.ToArray(); invalid.UnionWith(next);
+            try { PersistIndex(); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                if (database is null) { invalid.Clear(); invalid.UnionWith(previous); throw; }
+            }
+        }
     }
     public void DetectMissing(IEnumerable<Attachment> items)
     {
@@ -82,7 +119,8 @@ public sealed class AttachmentStore(Func<string> root)
             {
                 if(invalid.Contains(item.Key))continue;
                 if(Has(item)) changed |= seen.Add(item.Key);
-                else if(seen.Contains(item.Key))missing.Add(item.Key);
+                // A damaged or temporarily inaccessible original is not a user deletion.
+                else if(seen.Contains(item.Key) && IsDefinitelyMissing(item))missing.Add(item.Key);
             }
             if(changed)PersistIndex();
         }
@@ -141,10 +179,12 @@ public sealed class AttachmentStore(Func<string> root)
         lock(gate)
         {
             LoadIndex(); var path=PathFor(hash); if(File.Exists(path))File.Delete(path);
-            names.Remove(hash); PersistIndex();
+            if (names.Remove(hash)) PersistIndex();
+            verified.Remove(hash);
             var directory=Path.Combine(DirectoryPath,hash);
             if(Directory.Exists(directory) && !Directory.EnumerateFileSystemEntries(directory).Any())Directory.Delete(directory);
-            if(File.Exists(PartialPath(hash)))File.Delete(PartialPath(hash));
+            var partial = Path.Combine(TransferPath, hash + ".part");
+            if(File.Exists(partial))File.Delete(partial);
             if(File.Exists(ReadyPath(hash)))File.Delete(ReadyPath(hash));
             if(File.Exists(directory+".seen"))File.Delete(directory+".seen");
         }
@@ -153,7 +193,28 @@ public sealed class AttachmentStore(Func<string> root)
     {
         if(IsInvalid(item)) return false;
         try { var file=new FileInfo(PathFor(item.Hash)); return file.Exists && file.Length==item.Size; }
-        catch(IOException){return false;}
+        catch(Exception ex) when(ex is IOException or UnauthorizedAccessException){return false;}
+    }
+    private bool IsDefinitelyMissing(Attachment item)
+    {
+        try { _ = File.GetAttributes(PathFor(item.Hash)); return false; }
+        catch (FileNotFoundException) { return Directory.Exists(DirectoryPath); }
+        catch (DirectoryNotFoundException) { return false; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return false; }
+    }
+    private readonly Dictionary<string, (long Size, DateTime Modified)> verified = new();
+    public void Verify(Attachment item)
+    {
+        lock (gate)
+        {
+            if (!Has(item)) throw new IOException("附件原件暂不可用，请稍后重试。");
+            var info = new FileInfo(PathFor(item.Hash));
+            if (verified.TryGetValue(item.Hash, out var stamp) && stamp == (info.Length, info.LastWriteTimeUtc)) return;
+            using var input = File.OpenRead(info.FullName);
+            if (Convert.ToHexString(SHA256.HashData(input)).ToLowerInvariant() != item.Hash)
+                throw new InvalidDataException("附件校验失败：" + item.Name + "。请保留原件并从可靠副本恢复。");
+            verified[item.Hash] = (info.Length, info.LastWriteTimeUtc);
+        }
     }
     internal void ClearLocalFiles()
     {
@@ -178,7 +239,7 @@ public sealed class AttachmentStore(Func<string> root)
             File.Delete(Path.Combine(root(),"attachment-index.json.tmp"));
         }
     }
-    public string Availability(Attachment item) { lock(gate) return IsInvalid(item) ? "已失效 · 原件已被移除" : Has(item) ? "可用" : seen.Contains(item.Key) ? "已失效 · 原件已被移除" : "等待同步"; }
+    public string Availability(Attachment item) { lock(gate) return IsInvalid(item) ? "已失效 · 原件已被移除" : Has(item) ? "可用" : seen.Contains(item.Key) ? IsDefinitelyMissing(item) ? "已失效 · 原件已被移除" : "原件暂不可用" : "等待同步"; }
     public Attachment Add(Stream input, string name, string? kind = null)
     {
         Directory.CreateDirectory(TransferPath);
@@ -195,7 +256,14 @@ public sealed class AttachmentStore(Func<string> root)
             var hash = Convert.ToHexString(digest.GetHashAndReset()).ToLowerInvariant();
             var item = new Attachment(hash, name, size, kind ?? (new[] { ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp" }.Contains(Path.GetExtension(name).ToLowerInvariant()) ? "image" : "file"));
             item = item with { Instance = Guid.NewGuid().ToString("N") };
-            item.Validate(); lock (gate) { if (!Has(item)) StoreOriginal(temp, item); if(seen.Add(item.Key))PersistIndex(); } return item;
+            item.Validate(); lock (gate)
+            {
+                bool usable = Has(item);
+                if (usable) { try { Verify(item); } catch (InvalidDataException) { usable = false; } }
+                if (!usable) { StoreOriginal(temp, item); verified.Remove(item.Hash); }
+                if(seen.Add(item.Key))PersistIndex();
+            }
+            return item;
         }
         finally { if (File.Exists(temp)) File.Delete(temp); }
     }
@@ -233,6 +301,7 @@ public sealed class AttachmentStore(Func<string> root)
     {
         item.Validate();
         if (!Has(item) || offset < 0 || offset > item.Size) throw new IOException("附件尚未就绪。");
+        Verify(item);
         using var file = File.OpenRead(PathFor(item.Hash)); file.Position = offset;
         var bytes = new byte[(int)Math.Min(ChunkSize, item.Size - offset)]; file.ReadExactly(bytes); return bytes;
     }

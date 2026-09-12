@@ -38,7 +38,37 @@
     </Style>
     <Style TargetType="MenuItem">
       <Setter Property="Foreground" Value="#314451"/><Setter Property="Cursor" Value="Hand"/>
-      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="MenuItem"><Border x:Name="Item" Background="Transparent" CornerRadius="7" Padding="15,11" Margin="0,2"><ContentPresenter ContentSource="Header" RecognizesAccessKey="True"/></Border><ControlTemplate.Triggers><Trigger Property="IsHighlighted" Value="True"><Setter TargetName="Item" Property="Background" Value="#E8F1F3"/><Setter Property="Foreground" Value="#167D8D"/></Trigger><Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.45"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter>
+      <Setter Property="Template"><Setter.Value>
+        <ControlTemplate TargetType="MenuItem">
+          <Grid>
+            <Border x:Name="Item" Background="Transparent" CornerRadius="7" Padding="12,11" Margin="0,2">
+              <Grid>
+                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <TextBlock x:Name="Checkmark" Text="✓" Width="16" Margin="0,0,6,0" VerticalAlignment="Center" Visibility="Hidden"/>
+                <ContentPresenter x:Name="IconPresenter" Grid.Column="1" ContentSource="Icon" Margin="0,0,8,0" VerticalAlignment="Center"/>
+                <ContentPresenter Grid.Column="2" ContentSource="Header" RecognizesAccessKey="True" VerticalAlignment="Center"/>
+                <TextBlock x:Name="SubmenuArrow" Grid.Column="3" Text="›" FontSize="18" Margin="16,0,0,0" VerticalAlignment="Center" Visibility="Collapsed"/>
+              </Grid>
+            </Border>
+            <Popup x:Name="PART_Popup" IsOpen="{TemplateBinding IsSubmenuOpen}" Placement="Right" PlacementTarget="{Binding ElementName=Item}" AllowsTransparency="True" Focusable="False">
+              <Border Background="White" BorderBrush="#D7E1E9" BorderThickness="1" CornerRadius="12" Padding="6" MinWidth="172">
+                <ScrollViewer CanContentScroll="True" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" MaxHeight="480">
+                  <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Cycle" KeyboardNavigation.TabNavigation="Cycle"/>
+                </ScrollViewer>
+              </Border>
+            </Popup>
+          </Grid>
+          <ControlTemplate.Triggers>
+            <Trigger Property="IsCheckable" Value="False"><Setter TargetName="Checkmark" Property="Visibility" Value="Collapsed"/></Trigger>
+            <Trigger Property="IsChecked" Value="True"><Setter TargetName="Checkmark" Property="Visibility" Value="Visible"/></Trigger>
+            <Trigger Property="Icon" Value="{x:Null}"><Setter TargetName="IconPresenter" Property="Visibility" Value="Collapsed"/></Trigger>
+            <Trigger Property="HasItems" Value="True"><Setter TargetName="SubmenuArrow" Property="Visibility" Value="Visible"/></Trigger>
+            <Trigger Property="IsHighlighted" Value="True"><Setter TargetName="Item" Property="Background" Value="#E8F1F3"/><Setter Property="Foreground" Value="#167D8D"/></Trigger>
+            <Trigger Property="IsSubmenuOpen" Value="True"><Setter TargetName="Item" Property="Background" Value="#E8F1F3"/></Trigger>
+            <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.45"/></Trigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate>
+      </Setter.Value></Setter>
     </Style>
     <Style TargetType="Separator"><Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Separator"><Border Height="1" Background="#E8EDF1" Margin="10,4"/></ControlTemplate></Setter.Value></Setter></Style>
   </ResourceDictionary></Application.Resources>

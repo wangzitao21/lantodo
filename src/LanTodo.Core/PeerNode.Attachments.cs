@@ -6,17 +6,17 @@ public sealed partial class PeerNode
     {
         while(!token.IsCancellationRequested)
         {
-            try { if(store is TodoStore files) files.DetectMissingAttachments(); await Task.Delay(2000,token); }
+            try { if(store is TodoStore files) files.DetectMissingAttachments(); await Task.Delay(AttachmentScanInterval,token); }
             catch(OperationCanceledException) when(token.IsCancellationRequested) { break; }
             catch(IOException) { await DelayRetry(token); }
         }
     }
-    private Packet HandleAttachment(Packet request, HashSet<Attachment> index)
+    private Packet HandleAttachment(Packet request)
     {
         if (store is not TodoStore files || request.Attachment is not { } item) throw new InvalidDataException("附件请求无效。");
-        item.Validate(); files.DetectMissingAttachments();
+        item.Validate(); files.Attachments.DetectMissing([item]);
         // Authorization to sync is not authorization to write arbitrary unreferenced files.
-        if (!files.ActiveAttachments().Contains(item)) throw new InvalidDataException("未知或已删除附件。");
+        if (!files.ReferencesAttachment(item)) throw new InvalidDataException("未知或已删除附件。");
         switch (request.Kind)
         {
             case "blob-status": return new("blob-status", Done: files.Attachments.Has(item), Position: files.Attachments.Received(item));
@@ -29,7 +29,7 @@ public sealed partial class PeerNode
             default: throw new InvalidDataException();
         }
     }
-    private static async Task SyncAttachments(TodoStore files, Func<Packet, Task<Packet>> exchange, CancellationToken token)
+    private static async Task SyncAttachments(TodoStore files, Func<Packet, Task<Packet>> exchange, CancellationToken token, Func<bool>? yieldToText = null)
     {
         files.DetectMissingAttachments();
         foreach(var batch in files.Attachments.InvalidKeys.Chunk(256))
@@ -48,6 +48,7 @@ public sealed partial class PeerNode
         foreach (var item in files.ActiveAttachments().Where(a=>!files.Attachments.IsInvalid(a)).DistinctBy(a => a.Hash))
         {
             token.ThrowIfCancellationRequested();
+            if (yieldToText?.Invoke() == true) return;
             if(files.Attachments.IsInvalid(item))continue;
             var remote = await exchange(new("blob-status", Attachment: item));
             if (remote.Kind != "blob-status" || remote.Position < 0 || remote.Position > item.Size) throw new InvalidDataException("附件状态无效。");
@@ -56,6 +57,7 @@ public sealed partial class PeerNode
                 long offset = files.Attachments.Received(item);
                 do
                 {
+                    if (yieldToText?.Invoke() == true) return;
                     var reply = await exchange(new("blob-get", Attachment: item, Position: offset));
                     if (reply.Kind != "blob-data" || reply.Position != offset || reply.Bytes is null) throw new InvalidDataException("附件响应无效。");
                     files.ReceiveAttachment(item, offset, reply.Bytes);
@@ -68,6 +70,7 @@ public sealed partial class PeerNode
                 long offset = remote.Position;
                 do
                 {
+                    if (yieldToText?.Invoke() == true) return;
                     var bytes = files.Attachments.ReadChunk(item, offset);
                     var reply = await exchange(new("blob-put", Attachment: item, Position: offset, Bytes: bytes));
                     if (reply.Kind != "blob-saved" || reply.Position < offset + bytes.Length || reply.Position > item.Size) throw new InvalidDataException("附件尚未确认保存。");

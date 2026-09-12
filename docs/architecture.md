@@ -49,6 +49,8 @@ Windows 和 Android 共用 SQLite 后端，业务及同步依赖 `ITodoStore`；
 
 单次保存、一个导入批次或一次批量删除在 SQLite 事务内提交，提交后才更新内存头索引并发出变更通知。失败整体回滚，内存不会先于磁盘。同步会话跨多个批次，已提交批次保留，重试按版本 ID 去重。
 
+Android 日常状态修改与输入过程的草稿保存通过运行时持有的 `LocalWriteQueue` 顺序执行。入队前在界面线程捕获数据，队列中只执行本地存储操作；失败通知原调用者，但不会阻断后续写入。发送、生命周期结束和草稿交换先等待旧写入完成，再执行同步持久化，避免较旧草稿在发送之后重新出现。完成提示和删除撤销在提交成功后显示，不以提前改变内存状态代替持久化。
+
 启动检查数据库应用标识、结构版本、SQLite quick_check、记录内容哈希和完整父图。遇到未来版本、损坏或缺父记录失败关闭。头索引仍在启动时由完整历史重建，多年大数据规模尚需基准测试。
 
 数据库使用 `journal_mode=DELETE`、`synchronous=FULL`，禁用连接池。纯文字资料的空闲目录只有数据库；v1.0.1 的原件存储于旁边的 `attachments/`，事务进行中或崩溃恢复前可能出现 `-journal`，不为减少临时文件而关闭事务日志。参考 [SQLite 临时文件](https://www.sqlite.org/tempfiles.html) 和 [PRAGMA](https://www.sqlite.org/pragma.html)。Windows 使用跨进程命名互斥量，专用线程拥有和释放，以适应异步调用切换线程；Android 使用应用私有目录和进程内唯一运行时。
@@ -90,7 +92,9 @@ Windows 和 Android 共用 SQLite 后端，业务及同步依赖 `ITodoStore`；
 
 Windows：WPF 主窗口关闭进入托盘，网络继续运行；从托盘退出时先异步停止网络、释放资料锁，再结束进程。按规范化资料目录建立互斥锁与当前用户命名管道，重复打开转交现有窗口。网络循环在线程池执行，避免退出等待 UI 上下文造成死锁。需要防火墙允许专用网络 TCP/UDP。尚无开机自启动或安装器。
 
-Android：Activity 与 SyncService 共用进程级 AppRuntime，网络生命周期串行。服务声明 connectedDevice 前台类型，保持常驻通知、Wi-Fi MulticastLock；有长期配对设备时持有部分唤醒锁，用户关闭服务时释放。网络回调触发重新连接。Activity 离开时，服务仍在则保持网络；关闭后台服务但界面仍可见时，前台同步继续工作。前台服务本身不能绕过所有 Doze 限制，因此提供电池优化豁免申请入口，并说明小米后台策略。系统强制停止或回收后不承诺持续联网，不实现无限重启。参考 [前台服务类型](https://developer.android.com/develop/background-work/services/fgs/service-types) 和 [Doze / App Standby](https://developer.android.com/training/monitoring-device-state/doze-standby)。
+Android：Activity 与 SyncService 共用进程级 AppRuntime，网络生命周期串行。Activity 先构建首页和输入区，资料初始化在后台执行，完成后绑定已有输入区。此前发送的文字以稳定 todo ID 保存到独立 quick-captures.json；SQLite 提交后再移除条目，重放检查完整历史防止重复或复活已删除记录。输入草稿保留轻量文字镜像，数据库载入不覆盖新输入。
+
+服务声明 connectedDevice 前台类型，保持常驻通知；后台 Wi-Fi 多播锁仅在发现窗口持有。启用后台同步后，发送时持有最长 15 秒的部分唤醒锁，确认同步后提前释放，空闲不持有 CPU 锁。网络回调、前台恢复触发重新连接。Activity 离开时，服务仍在则保持网络；关闭后台服务但界面仍可见时，前台同步继续工作。系统强制停止、深度休眠或回收仍可能中断联网，不实现无限重启。参考 [前台服务类型](https://developer.android.com/develop/background-work/services/fgs/service-types) 和 [Doze / App Standby](https://developer.android.com/training/monitoring-device-state/doze-standby)。
 
 当前构建 target SDK 36，最低 API 26。Android 17 对 target SDK 37 及以上应用要求运行时 `ACCESS_LOCAL_NETWORK`；未来升级 target SDK 时必须加入声明、解释和运行时申请，不能只改版本号。当前不把 SDK 37 支持记为通过。参考 [Android 本地网络权限](https://developer.android.com/privacy-and-security/local-network-permission)。
 
@@ -99,6 +103,10 @@ Android：Activity 与 SyncService 共用进程级 AppRuntime，网络生命周�
 ## 成员发现与自动同步
 
 每个成员运行独立连接循环，优先尝试局域网发现地址，再尝试已配置地址和其他成员传来的地址。地址仅是未受信任的路由提示，TLS 必须匹配设备证书指纹。`space-hello` 在数据交换前合并同根签名成员日志，并交换可达地址；新成员无需与每个旧成员分别配对。
+
+已知地址最多同时进行三个连接尝试，后续通道分别延迟 150/300ms；首个通过 TLS 身份验证的连接交换数据，其余取消并释放。发现地址变化和前台重连可取消正在等待的旧握手，连接变化计数避免退避窗口遗漏唤醒。空间认证完成后即可更新在线状态，已同步仍以版本确认判定。
+
+核对版本清单后先上传本机缺失版本，再下载远端历史。自动同步在附件文件及分块之间检查是否有本轮快照外的新版本，有则结束当前轮并优先发送文字，下一轮继续断点传输。显式单次 SyncAsync 保持完整附件传输语义；协议、记录格式和证书校验未改变。
 
 `done` 返回拍摄清单快照前的变化标记。`watch` 最长等待十秒，与本地变更事件竞速；修改取消空闲等待，下一轮先核对版本。对离线成员独立退避，手动同步或成员变化唤醒重试。空闲不反复交换完整任务清单，版本清单在实际核对时仍是全量分页。
 

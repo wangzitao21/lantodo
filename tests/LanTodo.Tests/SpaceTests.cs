@@ -87,7 +87,7 @@ static class SpaceTests
             await Until(() => b.Has(next.Id));
             a.Id.Revoke(c.Id.Id);
             await Until(() => !b.Id.IsTrusted(c.Id.Id) && !c.Id.Space!.Contains(c.Id.Id));
-            Check(c.Node.Status.Contains("已退出空间"), "Removed device still reports an active sync");
+            Check(!c.Node.Status.StartsWith("已同步") && !c.Node.IsOnline, "Removed device still reports an active sync");
             var denied = c.Add("被移除后的本机修改"); await Task.Delay(1500);
             Check(!a.Has(denied.Id) && !b.Has(denied.Id), "Removed device uploaded data");
             await c.Node.JoinSpaceAsync(a.Node.CreateInvite()); await Until(() => b.Has(denied.Id));
